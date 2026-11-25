@@ -1,0 +1,3940 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:," />
+  <title>Flow Pilot · 实时监控</title>
+  <style>
+  /* Flow Pilot v3.8.0 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
+  :root,
+  html[data-theme="light"] {
+    color-scheme: light;
+    --fp-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    --fp-mono: "JetBrains Mono", "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", monospace;
+    --fp-win-alpha: 0.97;
+    --fp-canvas: #ECEBE6;
+    --fp-canvas-rgb: 236, 235, 230;
+    --fp-card-rgb: 255, 255, 255;
+    --fp-card-hover-rgb: 252, 251, 249;
+    --fp-sub-rgb: 243, 242, 238;
+    --fp-recessed: #E2E0D9;
+    --fp-track: rgba(20, 20, 22, 0.075);
+
+    --fp-border: rgba(24, 24, 27, 0.07);
+    --fp-border-subtle: rgba(24, 24, 27, 0.05);
+    --fp-border-strong: rgba(24, 24, 27, 0.16);
+    --fp-shell-border: rgba(24, 24, 27, 0.15);
+    --fp-shell-bevel:
+      inset 0 1px 0 rgba(255, 255, 255, 0.92),
+      inset 0 0 0 0.5px rgba(24, 24, 27, 0.08);
+    --fp-card-shadow:
+      0 1px 2px rgba(20, 20, 22, 0.05),
+      0 10px 22px -8px rgba(20, 20, 22, 0.048),
+      inset 0 1px 0 #FFFFFF;
+    --fp-pill-shadow:
+      0 1px 2px rgba(20, 20, 22, 0.06),
+      inset 0 1px 0 #FFFFFF;
+
+    --fp-text: #141416;
+    --fp-text-sec: #4E4C46;
+    --fp-text-muted: #858279;
+    --fp-text-faint: #A5A198;
+
+    --fp-accent: #2B44FF;
+    --fp-accent-hover: #2541F0;
+    --fp-accent-soft: rgba(43, 68, 255, 0.095);
+    --fp-accent-med: rgba(43, 68, 255, 0.19);
+    --fp-accent-ring: rgba(43, 68, 255, 0.24);
+
+    --fp-sys: #2B44FF;
+    --fp-ext: #7C3AED;
+    --fp-tool: #0D9488;
+    --fp-chat: #D97706;
+
+    --fp-ok: #15803D;
+    --fp-ok-soft: rgba(21, 128, 61, 0.11);
+    --fp-wait: #2B44FF;
+    --fp-wait-soft: rgba(43, 68, 255, 0.095);
+    --fp-warn: #B45309;
+    --fp-warn-bg: rgba(217, 119, 6, 0.10);
+    --fp-warn-border: rgba(180, 83, 9, 0.30);
+    --fp-danger: #E11D48;
+    --fp-danger-bg: rgba(225, 29, 72, 0.09);
+    --fp-danger-border: rgba(225, 29, 72, 0.32);
+
+    --fp-scroll-thumb: #C5C2B9;
+    --fp-grip-stroke: rgba(20, 20, 22, 0.26);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; min-width: 0; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    color: var(--fp-text);
+    font-family: var(--fp-sans);
+    font-size: 12px;
+    line-height: 1.42;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* 4px arrowless rounded scrollbars */
+  *::-webkit-scrollbar { width: 4px; height: 4px; }
+  *::-webkit-scrollbar-button,
+  *::-webkit-scrollbar-button:single-button,
+  *::-webkit-scrollbar-button:vertical:decrement,
+  *::-webkit-scrollbar-button:vertical:increment,
+  *::-webkit-scrollbar-button:horizontal:decrement,
+  *::-webkit-scrollbar-button:horizontal:increment,
+  *::-webkit-scrollbar-corner { display: none !important; width: 0 !important; height: 0 !important; background: transparent !important; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: var(--fp-scroll-thumb); border-radius: 999px; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--fp-text-muted); }
+
+  html.mode-hud, body.mode-hud { height: 100%; overflow: hidden; background: transparent; user-select: none; }
+  body.mode-embed { min-height: 100vh; overflow-x: hidden; overflow-y: auto; background: var(--fp-canvas); }
+
+  /* Calm-mode zero-FPS compositor hibernation */
+  body.is-calm *:not(.flash-highlight) { animation-name: none !important; animation-play-state: paused !important; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+    .pill-dot.running,
+    .pill-dot.alert,
+    .sub-dot.running,
+    .sub-dot.streaming,
+    .step-row.state-stalled .status-dot,
+    .global-tps-badge.waiting,
+    .speed-badge.waiting,
+    .capsule-unit:not(.expanded).has-global-alert {
+      animation: none !important;
+    }
+  }
+
+  .selectable { user-select: text; cursor: text; }
+  .mono-num { font-family: var(--fp-mono); font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; letter-spacing: 0; }
+
+  .app-root { width: 100%; height: 100%; }
+  body.mode-embed .app-root { max-width: 560px; margin: 0 auto; padding: 8px; height: auto; }
+
+  /* ---------- Unified Equal-Width Capsule Unit (Single Outer Shell) ---------- */
+  .capsule-unit {
+    position: relative;
+    display: none;
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+    background: rgba(var(--fp-canvas-rgb), var(--fp-win-alpha));
+    background-clip: padding-box;
+    border: 1px solid var(--fp-shell-border);
+    box-shadow: var(--fp-shell-bevel);
+    overflow: hidden;
+    transition: border-color 0.18s ease, border-radius 0.14s ease;
+  }
+  .capsule-unit.visible { display: flex; }
+  .capsule-unit:not(.expanded) { border-radius: 18px; }
+  .capsule-unit.expanded { border-radius: 14px; }
+  .capsule-unit.has-global-alert { border-color: var(--fp-danger-border); }
+  .capsule-unit:not(.expanded).has-global-alert { animation: fpAlertInset 1.5s infinite ease-in-out; }
+  body.mode-hud .capsule-unit.expanded { height: 100%; }
+  body.mode-embed .capsule-unit { background: var(--fp-canvas); box-shadow: var(--fp-card-shadow); }
+
+  .pill-shell {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    width: 100%;
+    height: 34px;
+    min-height: 34px;
+    flex-shrink: 0;
+    padding: 0 10px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    transition: opacity 0.18s ease;
+  }
+  body.mode-hud .pill-shell { cursor: grab; }
+  body.mode-hud .pill-shell:active { cursor: grabbing; }
+  body.mode-embed .pill-shell { cursor: pointer; }
+  body.mode-embed .pill-shell.no-expand { cursor: default; }
+
+  .capsule-unit.expanded .pill-shell {
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .pill-shell.idle-dim { opacity: 0.90; }
+  .pill-shell.idle-dim:hover { opacity: 1; }
+
+  .pill-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 20px;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .pill-brand-mini {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: var(--fp-accent);
+    color: #FFFFFF;
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  .conn-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 6.5px;
+    height: 6.5px;
+    border-radius: 50%;
+    background: var(--fp-ok);
+    border: 1.5px solid var(--fp-canvas);
+  }
+  .conn-dot.offline { background: var(--fp-warn); }
+
+  .pill-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--fp-text-muted); }
+  .pill-dot.running { background: var(--fp-accent); box-shadow: 0 0 0 2.5px var(--fp-accent-soft); animation: fpPulse 1.2s infinite ease-in-out; }
+  .pill-dot.alert { background: var(--fp-danger); box-shadow: 0 0 0 2.5px var(--fp-danger-bg); animation: fpPulse 0.95s infinite ease-in-out; }
+
+  .pill-status-text {
+    white-space: nowrap;
+    height: 20px;
+    line-height: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--fp-text);
+    font-variant-numeric: tabular-nums;
+  }
+  .pill-tps-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    height: 20px;
+    line-height: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: var(--fp-text-sec);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill-tps-group.active { color: var(--fp-accent); }
+  .pill-tps-group.waiting { color: var(--fp-wait); }
+  .pill-tps-val {
+    display: inline-block;
+    width: 80px;
+    min-width: 80px;
+    height: 20px;
+    line-height: 20px;
+    text-align: right;
+    font-family: var(--fp-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+  .pill-tps-val::after { content: "\200B"; font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; }
+
+  .pill-alert-tag {
+    display: none;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--fp-danger-bg);
+    border: 1px solid var(--fp-danger-border);
+    color: var(--fp-danger);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    flex-shrink: 0;
+    font-family: var(--fp-mono);
+  }
+  .pill-alert-tag.visible { display: inline-flex; align-items: center; gap: 2px; }
+
+  .pill-settings-btn {
+    flex-shrink: 0;
+    appearance: none;
+    border: 1px solid var(--fp-border);
+    background: rgb(var(--fp-card-rgb));
+    box-shadow: var(--fp-pill-shadow);
+    color: var(--fp-text-sec);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    padding: 0;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease, transform 0.1s ease;
+  }
+  .pill-settings-btn:hover { border-color: var(--fp-border-strong); color: var(--fp-text); background: rgb(var(--fp-card-hover-rgb)); }
+  .pill-settings-btn:active { transform: scale(0.95); }
+  .pill-settings-btn.active { border-color: var(--fp-accent-med); background: var(--fp-accent-soft); color: var(--fp-accent); }
+
+  /* ---------- Seamless Unified Dropdown Shell ---------- */
+  .dropdown-shell {
+    position: relative;
+    z-index: 1;
+    display: none;
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+    margin-top: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  .capsule-unit.expanded .dropdown-shell {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  body.mode-embed .dropdown-shell {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .flash-highlight { animation: fpFlashLocate 0.52s ease-in-out 3 !important; }
+
+  /* ---------- 8-Direction Resize Hit-Test Layer (Edge W/E in Pill, All 8 When Expanded) ---------- */
+  .resize-layer { display: none; pointer-events: none; position: absolute; inset: 0; z-index: 60; }
+  body.mode-hud .capsule-unit.visible .resize-layer { display: block; }
+  .capsule-unit:not(.expanded) .resize-edge.edge-n,
+  .capsule-unit:not(.expanded) .resize-edge.edge-s,
+  .capsule-unit:not(.expanded) .resize-corner { display: none; }
+  .capsule-unit:not(.expanded) .resize-edge.edge-w,
+  .capsule-unit:not(.expanded) .resize-edge.edge-e { top: 6px; bottom: 6px; width: 6px; }
+
+  .resize-edge, .resize-corner { position: absolute; pointer-events: auto; background: transparent; transition: background-color 0.14s ease; }
+  .resize-edge.edge-n { top: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+  .resize-edge.edge-s { bottom: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+  .resize-edge.edge-w { left: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+  .resize-edge.edge-e { right: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+  .resize-edge:hover { background: var(--fp-accent-soft); }
+  .resize-corner { width: 10px; height: 10px; z-index: 62; }
+  .resize-corner.corner-nw { top: 0; left: 0; cursor: nwse-resize; }
+  .resize-corner.corner-ne { top: 0; right: 0; cursor: nesw-resize; }
+  .resize-corner.corner-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+  .resize-corner.corner-se { bottom: 0; right: 0; cursor: nwse-resize; }
+  .resize-corner.corner-se::after {
+    content: "";
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    width: 7px;
+    height: 7px;
+    background: linear-gradient(
+      135deg,
+      transparent 0%,
+      transparent 42%,
+      var(--fp-grip-stroke) 42%,
+      var(--fp-grip-stroke) 55%,
+      transparent 55%,
+      transparent 74%,
+      var(--fp-grip-stroke) 74%,
+      var(--fp-grip-stroke) 88%,
+      transparent 88%
+    );
+    opacity: 0.85;
+    pointer-events: none;
+  }
+  .resize-corner.corner-se:hover::after { opacity: 1; filter: brightness(0.85); }
+
+  /* ---------- Global TPS Badge (Used in Dock Panel) ---------- */
+  .global-tps-badge {
+    flex: 0 0 auto;
+    min-width: 112px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 3px;
+    font-family: var(--fp-sans);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    letter-spacing: 0;
+    white-space: nowrap;
+    border: 1px solid var(--fp-border);
+    background: rgb(var(--fp-card-rgb));
+    color: var(--fp-text-sec);
+    box-shadow: var(--fp-pill-shadow);
+    transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+  }
+  .global-tps-badge .gtps-bolt { flex: 0 0 auto; font-size: 11px; line-height: 1; display: inline-flex; align-items: center; }
+  .global-tps-badge .gtps-lbl { flex: 0 0 auto; height: 18px; line-height: 18px; font-weight: 600; }
+  .global-tps-badge .gtps-val { flex: 1 1 auto; height: 18px; line-height: 18px; text-align: right; font-family: var(--fp-mono); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .global-tps-badge.active { background: var(--fp-accent-soft); border-color: var(--fp-accent-med); color: var(--fp-accent); }
+  .global-tps-badge.waiting { background: var(--fp-wait-soft); border-color: var(--fp-accent-med); color: var(--fp-wait); animation: fpBorderBreath 1.4s infinite ease-in-out; }
+  .global-tps-badge.idle { color: var(--fp-text-muted); }
+
+  /* ---------- Inline Settings Drawer (In-Place Above Session Stream) ---------- */
+  .settings-drawer {
+    display: none;
+    flex-direction: column;
+    gap: 7px;
+    padding: 4px 10px 8px;
+    border-bottom: none;
+    background: transparent;
+    font-size: 11px;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .settings-drawer.open { display: flex; }
+  .settings-drawer > .set-row,
+  .settings-drawer > .switch-btn { padding: 0 10px; }
+
+  .settings-group-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 9px;
+    background: rgb(var(--fp-card-rgb));
+    border: 1px solid var(--fp-border);
+    box-shadow: var(--fp-pill-shadow);
+  }
+  .fastio-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--fp-border-subtle);
+  }
+  .fastio-main { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; }
+  .fastio-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fp-ok); box-shadow: 0 0 0 3px var(--fp-ok-soft); flex-shrink: 0; }
+  .fastio-dot.off { background: var(--fp-text-muted); box-shadow: none; }
+  .fastio-text { font-size: 11px; font-weight: 600; letter-spacing: 0; color: var(--fp-text); white-space: normal; line-height: 1.38; font-variant-numeric: tabular-nums; }
+  .fastio-text .fastio-sub { font-weight: 500; color: var(--fp-text-muted); }
+  .fastio-saved-pill {
+    flex-shrink: 0;
+    min-width: 64px;
+    height: 20px;
+    line-height: 20px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--fp-accent-soft);
+    color: var(--fp-accent);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-align: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .fastio-saved-pill.zero { background: rgb(var(--fp-sub-rgb)); color: var(--fp-text-muted); }
+
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; letter-spacing: 0; color: var(--fp-text-sec); }
+
+  .switch-btn { display: inline-flex; align-items: center; justify-content: space-between; width: 100%; cursor: pointer; user-select: none; font-size: 11px; font-weight: 500; letter-spacing: 0; color: var(--fp-text); }
+  .switch-track { width: 30px; height: 17px; border-radius: 999px; background: var(--fp-recessed); border: 1px solid var(--fp-border-strong); position: relative; transition: background-color 0.16s ease, border-color 0.16s ease; flex-shrink: 0; }
+  .switch-track::after { content: ""; position: absolute; top: 1.5px; left: 1.5px; width: 12px; height: 12px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22); transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1); }
+  .switch-btn.on .switch-track { background: var(--fp-accent); border-color: var(--fp-accent); }
+  .switch-btn.on .switch-track::after { transform: translateX(13px); }
+
+  .seg-group { display: inline-flex; background: var(--fp-recessed); border: 1px solid var(--fp-border); border-radius: 7px; padding: 2px; gap: 2px; }
+  .seg-btn { appearance: none; border: none; background: transparent; color: var(--fp-text-sec); font-size: 11px; font-weight: 500; letter-spacing: 0; padding: 2.5px 7px; border-radius: 5px; cursor: pointer; font-family: inherit; transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease; }
+  .seg-btn:hover { color: var(--fp-text); }
+  .seg-btn.active { background: rgb(var(--fp-card-rgb)); color: var(--fp-accent); font-weight: 600; box-shadow: var(--fp-pill-shadow); }
+
+  .fit-reset-btn { appearance: none; border: 1px solid var(--fp-border-strong); background: rgb(var(--fp-card-rgb)); box-shadow: var(--fp-pill-shadow); color: var(--fp-text); font-size: 11px; font-weight: 600; letter-spacing: 0; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-family: inherit; transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease; }
+  .fit-reset-btn:hover, .fit-reset-btn.is-manual { border-color: var(--fp-accent-med); background: var(--fp-accent-soft); color: var(--fp-accent); }
+
+  .alpha-wrap { display: inline-flex; align-items: center; gap: 6px; width: 136px; }
+  .alpha-slider { flex: 1 1 auto; height: 4px; accent-color: var(--fp-accent); cursor: pointer; }
+  .alpha-val { width: 34px; text-align: right; font-size: 11px; color: var(--fp-text); }
+
+  .drawer-bottom-actions { display: flex; align-items: center; gap: 6px; padding-top: 2px; border-top: none; }
+  .drawer-action-btn {
+    width: 100%;
+    appearance: none;
+    border: 1px solid var(--fp-border-strong);
+    background: rgb(var(--fp-card-rgb));
+    box-shadow: var(--fp-pill-shadow);
+    color: var(--fp-text);
+    border-radius: 7px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    font-family: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease;
+  }
+  .drawer-action-btn:hover { border-color: var(--fp-accent-med); color: var(--fp-accent); background: var(--fp-accent-soft); }
+  .drawer-action-btn.primary { border-color: var(--fp-accent-med); background: var(--fp-accent-soft); color: var(--fp-accent); }
+  .drawer-action-btn.primary:hover { background: var(--fp-accent); border-color: var(--fp-accent); color: #FFFFFF; }
+
+  /* ---------- Pure Session Stream ---------- */
+  .stack-scroll { flex: 1 1 auto; min-height: 48px; max-height: none; overflow: hidden; }
+  .capsule-unit.scroll-capped .stack-scroll { flex: 1 1 0; min-height: 48px; max-height: none; overflow-y: auto; }
+  .capsule-unit.manual-height:not(.scroll-capped) .stack-scroll { flex: 1 1 auto; max-height: none; overflow-y: hidden; }
+  body.mode-embed .stack-scroll { max-height: none; min-height: 0; overflow: visible; }
+
+  .stack-list { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+
+  /* ---------- Master Task Card ---------- */
+  .task-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 11px;
+    border-radius: 12px;
+    background: rgb(var(--fp-card-rgb));
+    border: 1px solid var(--fp-border);
+    box-shadow: var(--fp-card-shadow);
+    transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  }
+  .task-card:hover { border-color: var(--fp-border-strong); }
+  .task-card.bucket-ALERT { border-color: var(--fp-danger-border); box-shadow: 0 1px 3px rgba(225, 29, 72, 0.10), inset 0 0 0 0.5px var(--fp-danger-border); }
+  .task-card.host-focused { border-color: var(--fp-accent-med); }
+
+  .card-row1 { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+  .card-title-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; flex: 1 1 0; min-width: 0; }
+  body.mode-embed .card-title-wrap { cursor: pointer; }
+
+  .card-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--fp-text-muted); }
+  .task-card.bucket-RUNNING .card-dot { background: var(--fp-accent); box-shadow: 0 0 0 2.5px var(--fp-accent-soft); }
+  .task-card.bucket-ALERT .card-dot { background: var(--fp-danger); box-shadow: 0 0 0 2.5px var(--fp-danger-bg); }
+  .task-card.bucket-RECENT .card-dot { background: var(--fp-ok); }
+
+  .ws-badge {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: rgb(var(--fp-sub-rgb));
+    border: 1px solid var(--fp-border);
+    color: var(--fp-text-sec);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .card-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0;
+    line-height: 1.35;
+    color: var(--fp-text);
+    white-space: normal;
+    word-break: break-word;
+  }
+  .card-ctrl { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  .tiny-icon-btn { appearance: none; border: none; background: transparent; color: var(--fp-text-muted); width: 20px; height: 20px; padding: 0; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-family: inherit; cursor: pointer; }
+  .tiny-icon-btn:hover { background: rgb(var(--fp-sub-rgb)); color: var(--fp-text); }
+  .tiny-icon-btn.pinned { color: var(--fp-accent); }
+
+  .card-meta-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 6px; margin-top: -2px; min-width: 0; }
+  .card-meta-left { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; flex: 1 1 auto; min-width: 0; }
+  .model-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6.5px;
+    border-radius: 5px;
+    background: rgb(var(--fp-sub-rgb));
+    border: 1px solid var(--fp-border-subtle);
+    color: var(--fp-text-sec);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .model-badge::before { content: ""; width: 4.5px; height: 4.5px; border-radius: 50%; background: var(--fp-accent); opacity: 0.75; flex-shrink: 0; }
+  .branch-badge {
+    display: none;
+    padding: 1px 5.5px;
+    border-radius: 5px;
+    background: transparent;
+    border: 1px solid var(--fp-border);
+    color: var(--fp-text-muted);
+    font-size: 11px;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .usage-chip {
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: rgb(var(--fp-sub-rgb));
+    border: 1px solid var(--fp-border-subtle);
+    color: var(--fp-text-sec);
+    cursor: pointer;
+    transition: border-color 0.14s ease, background-color 0.14s ease, color 0.14s ease;
+  }
+  .usage-chip:hover { border-color: var(--fp-border-strong); }
+  .usage-chip.has-cache { background: var(--fp-ok-soft); border-color: rgba(21, 128, 61, 0.22); color: var(--fp-ok); }
+  .usage-chip.is-cache-cliff { background: var(--fp-warn-bg); border-color: var(--fp-warn-border); color: var(--fp-warn); }
+
+  .ctx-block { display: flex; flex-direction: column; gap: 5px; padding-top: 1px; }
+  .ctx-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 5px; min-height: 22px; min-width: 0; }
+  .ctx-readout {
+    display: inline-flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    color: var(--fp-text);
+  }
+  .ctx-pct-val { flex-shrink: 0; font-size: 12px; font-weight: 700; letter-spacing: 0; color: var(--fp-text); }
+  .ctx-tok-sub { flex: 0 1 auto; min-width: 0; white-space: normal; font-size: 11px; font-weight: 500; letter-spacing: 0; color: var(--fp-text-muted); }
+  .ctx-readout.warn .ctx-pct-val { color: var(--fp-warn); }
+  .ctx-readout.crit .ctx-pct-val { color: var(--fp-danger); }
+
+  .speed-badge {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 20px;
+    min-height: 20px;
+    padding: 0 6px;
+    font-family: var(--fp-mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+    white-space: nowrap;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    color: var(--fp-text-sec);
+    cursor: pointer;
+    transition: background-color 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+  }
+  .speed-badge::after { content: "\200B"; font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; }
+  .speed-badge:hover { background: rgb(var(--fp-sub-rgb)); }
+  .speed-badge.empty { color: var(--fp-text-muted); background: rgb(var(--fp-sub-rgb)); border-color: var(--fp-border-subtle); font-weight: 600; }
+  .speed-badge.history { color: var(--fp-text-sec); background: rgb(var(--fp-sub-rgb)); border-color: var(--fp-border); font-weight: 600; }
+  .speed-badge.waiting-sub { color: var(--fp-wait); background: var(--fp-wait-soft); border-color: var(--fp-accent-med); font-weight: 600; }
+  .speed-badge.active { color: var(--fp-accent); background: var(--fp-accent-soft); border-color: var(--fp-accent-med); font-weight: 600; }
+  .speed-badge.waiting { color: var(--fp-wait); background: var(--fp-wait-soft); border-color: var(--fp-accent-med); font-weight: 600; animation: fpBorderBreath 1.4s infinite ease-in-out; }
+  .ctx-row .speed-badge { flex: 0 0 auto; min-width: 132px; max-width: 152px; overflow: hidden; text-overflow: ellipsis; }
+
+  .bar-hit { width: 100%; padding: 4px 0; margin: -4px 0; cursor: pointer; display: flex; align-items: center; }
+  .bar-track { width: 100%; height: 6px; border-radius: 999px; background: var(--fp-track); overflow: hidden; display: flex; gap: 1px; transition: box-shadow 0.16s ease, filter 0.16s ease; }
+  .bar-track.warn { box-shadow: 0 0 0 1px var(--fp-warn-border); }
+  .bar-track.crit { box-shadow: 0 0 0 1.5px var(--fp-danger-border); background: var(--fp-danger-bg); }
+  .bar-hit:hover .bar-track { box-shadow: 0 0 0 2px var(--fp-accent-soft); filter: brightness(0.97); }
+  .bar-hit.open .bar-track { box-shadow: 0 0 0 1.5px var(--fp-accent-med); }
+  .bar-hit:hover .bar-track.warn { box-shadow: 0 0 0 1px var(--fp-warn-border), 0 0 0 3px var(--fp-warn-bg); filter: brightness(0.97); }
+  .bar-hit.open .bar-track.warn { box-shadow: 0 0 0 1.5px var(--fp-warn-border); }
+  .bar-hit:hover .bar-track.crit { box-shadow: 0 0 0 1.5px var(--fp-danger-border), 0 0 0 3px var(--fp-danger-bg); filter: brightness(0.97); }
+  .bar-hit.open .bar-track.crit { box-shadow: 0 0 0 1.5px var(--fp-danger-border); }
+  .bar-seg { height: 100%; transition: width 0.22s ease; }
+  .bar-seg.sys { background: var(--fp-sys); }
+  .bar-seg.ext { background: var(--fp-ext); }
+  .bar-seg.tools { background: var(--fp-tool); }
+  .bar-seg.chat { background: var(--fp-chat); }
+  .bar-track.crit .bar-seg.chat { background: var(--fp-danger); }
+
+  .inline-drawer-wrap { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.15s ease; }
+  .inline-drawer-wrap.open { grid-template-rows: 1fr; }
+  .inline-drawer-inner { overflow: hidden; }
+  .inline-drawer-box { margin-top: 2px; padding: 6px 8px; border-radius: 8px; background: rgb(var(--fp-sub-rgb)); border: 1px solid var(--fp-border); font-size: 11px; line-height: 1.5; letter-spacing: 0; color: var(--fp-text-sec); display: flex; flex-direction: column; gap: 2px; }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px; }
+  .drawer-line strong { color: var(--fp-text); font-weight: 600; }
+  .drawer-sep { border-top: 1px solid var(--fp-border); padding-top: 3px; margin-top: 2px; }
+  .drawer-err { color: var(--fp-danger); font-weight: 500; word-break: break-word; }
+  .drawer-warn { color: var(--fp-warn); font-weight: 600; word-break: break-word; }
+  .ctx-est-tag { font-size: 10px; font-weight: 500; color: var(--fp-text-muted); }
+  .dot-swatch { display: inline-block; width: 6.5px; height: 6.5px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+
+  .step-row { display: none; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; padding: 2px 5px; margin: 0 -5px; border-radius: 6px; }
+  .step-row.state-alert, .step-row.state-stalled { display: flex; }
+  .step-row.state-stalled { background: rgb(var(--fp-sub-rgb)); cursor: pointer; }
+  .step-row.state-alert { background: var(--fp-danger-bg); cursor: pointer; }
+  .step-info { display: flex; align-items: center; gap: 5px; flex: 1 1 0; min-width: 0; }
+  .status-dot, .sub-dot { width: 6.5px; height: 6.5px; border-radius: 50%; flex-shrink: 0; background: var(--fp-text-muted); }
+  .sub-dot.running { background: var(--fp-ok); animation: fpPulse 1.15s infinite ease-in-out; }
+  .sub-dot.streaming { background: var(--fp-accent); box-shadow: 0 0 0 2px var(--fp-accent-soft); animation: fpPulse 1.05s infinite ease-in-out; }
+  .sub-dot.waiting { background: var(--fp-text-faint); }
+  .step-row.state-stalled .status-dot { background: var(--fp-warn); animation: fpPulse 1.15s infinite ease-in-out; }
+
+  .step-text { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 0 2px; flex: 1 1 0%; min-width: 0; font-size: 11px; letter-spacing: 0; font-variant-numeric: tabular-nums; color: var(--fp-text-sec); }
+  .step-text [data-role="stepLabel"] { flex: 0 1 auto; min-width: 0; white-space: normal; word-break: break-word; }
+  .step-text [data-role="stepTimerWrap"] { flex-shrink: 0; white-space: pre; }
+  .step-row.state-stalled .step-text { color: var(--fp-warn); font-weight: 500; }
+  .step-row.state-alert .step-text { color: var(--fp-danger); font-weight: 600; }
+
+  .step-actions { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .mini-btn { display: none; appearance: none; border: 1px solid var(--fp-border-strong); background: rgb(var(--fp-card-rgb)); box-shadow: var(--fp-pill-shadow); color: var(--fp-text-sec); border-radius: 5px; padding: 1.5px 6px; font-size: 11px; font-weight: 500; line-height: 1.35; letter-spacing: 0; font-family: inherit; cursor: pointer; white-space: nowrap; }
+  .mini-btn:hover { color: var(--fp-accent); border-color: var(--fp-accent); }
+  .mini-btn:disabled { opacity: 0.52; cursor: default; }
+  .mini-btn.danger { color: var(--fp-danger); border-color: var(--fp-danger-border); }
+  .mini-btn.wake { color: var(--fp-danger); border-color: var(--fp-danger-border); font-weight: 600; }
+  .step-row.state-alert .mini-btn.wake { display: inline-flex; }
+  .step-row.state-stalled .mini-btn.run-act { display: inline-flex; }
+
+  /* ---------- Swarm Total + Per-Bee Leaderboard ---------- */
+  .sub-section { display: none; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--fp-border); }
+  .sub-section.visible { display: flex; }
+
+  .swarm-bar { display: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 6px; padding: 3.5px 7px; border-radius: 7px; background: rgb(var(--fp-sub-rgb)); border: 1px solid var(--fp-border-subtle); cursor: pointer; transition: background-color 0.14s ease, border-color 0.14s ease; }
+  .swarm-bar.visible { display: flex; }
+  .swarm-bar:hover { border-color: var(--fp-border-strong); }
+  .swarm-bar-left { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 5px; font-size: 11px; font-weight: 600; letter-spacing: 0; color: var(--fp-text); white-space: normal; flex: 1 1 auto; min-width: 0; }
+  .swarm-bar-right { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .swarm-bar-right .speed-badge { flex: 0 0 auto; min-width: 102px; padding: 0 6px; }
+  .swarm-sep { color: var(--fp-border-strong); font-size: 11px; user-select: none; }
+  .swarm-chevron { font-size: 11px; color: var(--fp-text-muted); }
+
+  .sub-list { display: flex; flex-direction: column; gap: 3px; max-height: none; overflow: visible; }
+  .sub-item { display: flex; flex-direction: column; gap: 2px; }
+  .sub-row { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-height: 22px; padding: 2px 4px; border-radius: 6px; cursor: pointer; transition: background-color 0.12s ease; }
+  .sub-row:hover { background: rgb(var(--fp-sub-rgb)); }
+  .sub-row .speed-badge { flex: 0 0 auto; min-width: 104px; padding: 0 6px; }
+  .sub-left { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 5px; flex: 1 1 0%; min-width: 0; }
+  .sub-name { font-size: 11px; font-weight: 600; letter-spacing: 0; color: var(--fp-text); white-space: normal; word-break: break-word; flex: 0 1 auto; }
+  .sub-stage { display: inline-flex; align-items: center; flex-wrap: wrap; font-size: 11px; letter-spacing: 0; color: var(--fp-text-muted); flex: 0 1 auto; min-width: 0; font-variant-numeric: tabular-nums; }
+  .sub-stage-lbl { flex: 0 1 auto; min-width: 0; white-space: normal; word-break: break-word; }
+  .sub-timer-wrap { flex-shrink: 0; white-space: pre; }
+  .sub-row.is-streaming .sub-stage { color: var(--fp-accent); font-weight: 500; }
+
+  .sub-meter { width: 24px; height: 4px; border-radius: 999px; background: var(--fp-track); overflow: hidden; flex-shrink: 0; }
+  .sub-meter-fill { height: 100%; border-radius: 999px; background: var(--fp-text-muted); opacity: 0.45; transition: width 0.2s ease, background-color 0.2s ease; }
+  .sub-row.is-streaming .sub-meter-fill { background: var(--fp-accent); opacity: 1; }
+  .sub-row.is-running .sub-meter-fill { background: var(--fp-ok); opacity: 0.8; }
+  .sub-row .sub-meter.ctx-warn .sub-meter-fill { background: var(--fp-warn); opacity: 0.92; }
+  .sub-row .sub-meter.ctx-crit .sub-meter-fill { background: var(--fp-danger); opacity: 0.95; }
+
+  .sub-row.has-error .sub-dot { background: var(--fp-danger); animation: none; }
+  .sub-row.has-error .sub-name, .sub-row.has-error .sub-stage { color: var(--fp-danger); font-weight: 600; }
+  .sub-wake-btn { display: none; appearance: none; border: 1px solid var(--fp-danger-border); background: var(--fp-danger-bg); color: var(--fp-danger); border-radius: 5px; padding: 1px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0; font-family: inherit; cursor: pointer; flex-shrink: 0; }
+  .sub-row.has-error .sub-wake-btn { display: inline-flex; }
+
+  .sub-detail { display: none; padding: 5px 8px; margin-left: 11px; border-radius: 0 6px 6px 0; background: rgba(var(--fp-sub-rgb), 0.7); border-left: 2px solid var(--fp-accent-med); font-size: 11px; line-height: 1.5; letter-spacing: 0; color: var(--fp-text-sec); }
+  .sub-detail.open { display: block; }
+
+  /* ---------- Historical Idle Footer & Direct Expanded Idle Stream ---------- */
+  .idle-footer { display: none; flex-direction: column; border-top: none; background: transparent; flex: 0 0 auto; }
+  .idle-footer.visible { display: flex; }
+  .idle-footer.no-active { border-top: none; background: transparent; }
+
+  .idle-bar-btn { appearance: none; border: none; background: transparent; color: var(--fp-text-sec); width: 100%; height: 28px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 500; letter-spacing: 0; font-family: inherit; cursor: pointer; flex-shrink: 0; }
+  .idle-bar-btn:hover { color: var(--fp-text); background: var(--fp-track); }
+
+  .idle-list { display: none; flex-direction: column; gap: 4px; padding: 5px 8px 7px; border-top: none; max-height: none; overflow: hidden; }
+  .idle-footer.no-active .idle-list { border-top: none; padding: 6px 8px 8px; }
+  body.mode-embed .idle-list { max-height: 240px; overflow-y: auto; }
+  body.mode-embed .idle-footer.no-active .idle-list { max-height: none; overflow-y: visible; }
+  .idle-list.open { display: flex; }
+
+  .idle-item { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 26px; padding: 4px 7px; border-radius: 7px; background: rgb(var(--fp-card-rgb)); border: 1px solid var(--fp-border); font-size: 11px; letter-spacing: 0; flex-shrink: 0; }
+  body.mode-embed .idle-item { cursor: pointer; }
+  .idle-item.host-focused { border-color: var(--fp-accent-med); }
+  .idle-item-title { flex: 1 1 0; min-width: 0; white-space: normal; word-break: break-word; line-height: 1.35; color: var(--fp-text-sec); font-weight: 500; }
+  .idle-item-meta { font-size: 11px; color: var(--fp-text-muted); flex-shrink: 0; white-space: nowrap; }
+
+  /* ---------- Embedded HUD Dock Controller (Light-Only) ---------- */
+  .dock-panel { display: none; flex-direction: column; gap: 10px; padding: 12px 13px; border-radius: 14px; background: rgb(var(--fp-card-rgb)); border: 1px solid var(--fp-border); box-shadow: var(--fp-card-shadow); }
+  .dock-panel.visible { display: flex; }
+  .dock-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .dock-status { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12px; letter-spacing: 0; color: var(--fp-text); }
+  .dock-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fp-ok); box-shadow: 0 0 0 3px var(--fp-ok-soft); flex-shrink: 0; }
+  .dock-live-dot.offline { background: var(--fp-warn); box-shadow: 0 0 0 3px var(--fp-warn-bg); }
+  .dock-summary-box { padding: 8px 10px; border-radius: 9px; background: rgb(var(--fp-sub-rgb)); border: 1px solid var(--fp-border); font-size: 11px; letter-spacing: 0; color: var(--fp-text-sec); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .dock-btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .dock-btn { appearance: none; border: 1px solid var(--fp-border-strong); background: rgb(var(--fp-card-rgb)); box-shadow: var(--fp-pill-shadow); color: var(--fp-text); border-radius: 8px; padding: 6px 8px; font-size: 11px; font-weight: 500; letter-spacing: 0; font-family: inherit; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 4px; transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease; }
+  .dock-btn:hover { border-color: var(--fp-accent); color: var(--fp-accent); background: var(--fp-accent-soft); }
+  .dock-btn.full-span { grid-column: 1 / -1; background: var(--fp-accent); border-color: var(--fp-accent); color: #FFFFFF; font-weight: 600; }
+  .dock-btn.full-span:hover { background: var(--fp-accent-hover); color: #FFFFFF; }
+
+  @keyframes fpPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.42; transform: scale(0.84); }
+  }
+  @keyframes fpBorderBreath {
+    0%, 100% { border-color: var(--fp-accent-med); box-shadow: 0 0 0 0 transparent, var(--fp-pill-shadow); }
+    50% { border-color: var(--fp-accent-ring); box-shadow: 0 0 0 2px var(--fp-accent-soft), var(--fp-pill-shadow); }
+  }
+  @keyframes fpAlertInset {
+    0%, 100% { box-shadow: inset 0 0 9px rgba(225, 29, 72, 0.34), var(--fp-shell-bevel); }
+    50% { box-shadow: inset 0 0 3px rgba(225, 29, 72, 0.10), var(--fp-shell-bevel); }
+  }
+  @keyframes fpFlashLocate {
+    0%, 100% { box-shadow: var(--fp-shell-bevel); border-color: var(--fp-shell-border); }
+    50% { box-shadow: inset 0 0 18px var(--fp-accent-ring), inset 0 0 0 1.5px var(--fp-accent); border-color: var(--fp-accent); }
+  }
+  </style>
+</head>
+<body class="is-calm">
+  <div id="appRoot" class="app-root">
+    <!-- 1. Unified Capsule Unit: Single Outer Shell + Seamless Top Bar & Dropdown -->
+    <div id="capsuleUnit" class="capsule-unit">
+      <div id="resizeLayer" class="resize-layer" data-no-drag="1" aria-hidden="true">
+        <div class="resize-edge edge-n" data-resize-edge="n"></div>
+        <div class="resize-edge edge-s" data-resize-edge="s"></div>
+        <div class="resize-edge edge-e" data-resize-edge="e"></div>
+        <div class="resize-edge edge-w" data-resize-edge="w"></div>
+        <div class="resize-corner corner-nw" data-resize-edge="nw"></div>
+        <div class="resize-corner corner-ne" data-resize-edge="ne"></div>
+        <div class="resize-corner corner-sw" data-resize-edge="sw"></div>
+        <div class="resize-corner corner-se" data-resize-edge="se"></div>
+      </div>
+
+      <div id="pillShell" class="pill-shell" role="region" aria-label="Flow Pilot 监控胶囊">
+        <div class="pill-left">
+          <span class="pill-brand-mini" aria-hidden="true">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+            <span id="connDot" class="conn-dot" title="实时流运行正常"></span>
+          </span>
+          <span id="pillDot" class="pill-dot"></span>
+          <span id="pillStatusText" class="pill-status-text">全部空闲 (0)</span>
+          <span id="pillAlertTag" class="pill-alert-tag">⚠️ 0</span>
+        </div>
+        <span id="pillTpsGroup" class="pill-tps-group"><span class="gtps-bolt" aria-hidden="true">⚡</span><span class="gtps-lbl">总计</span><span id="pillTpsVal" class="pill-tps-val mono-num">0.0 tok/s</span></span>
+        <button id="pillSettingsBtn" class="pill-settings-btn" data-no-drag="1" type="button" aria-label="设置">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.8"/>
+            <path d="M12 3.8v3.4M12 16.8v3.4M16.16 9.6l2.94-1.7M4.9 16.1l2.94-1.7M16.16 14.4l2.94 1.7M4.9 7.9l2.94 1.7"/>
+          </svg>
+        </button>
+      </div>
+
+      <section id="dropdownShell" class="dropdown-shell" aria-label="Flow Pilot 会话与设置">
+        <div id="settingsDrawer" class="settings-drawer" data-no-drag="1" role="region" aria-label="Flow Pilot 设置">
+          <div class="settings-group-card">
+            <div id="fastIoStatusRow" class="fastio-head-row">
+              <span class="fastio-main">
+                <span id="fastIoDot" class="fastio-dot" aria-hidden="true"></span>
+                <span id="fastIoText" class="fastio-text">Fast I/O 加速在线 · <span class="fastio-sub">批读 0 文件 · 检索 0 次</span></span>
+              </span>
+              <span id="fastIoSavedBadge" class="fastio-saved-pill zero mono-num">(省 ~0s)</span>
+            </div>
+            <div id="toggleFastIoMcp" class="switch-btn on" role="switch" aria-checked="true" tabindex="0">
+              <span>MCP 批量读写加速</span><span class="switch-track"></span>
+            </div>
+          </div>
+
+          <div id="alwaysOnTopRow" class="set-row">
+            <div id="toggleAlwaysOnTop" class="switch-btn on" role="switch" aria-checked="true" tabindex="0">
+              <span>窗口始终置顶</span><span class="switch-track"></span>
+            </div>
+          </div>
+
+          <div class="set-row">
+            <div id="toggleAutoHeal" class="switch-btn on" role="switch" aria-checked="true" tabindex="0">
+              <span>断流自动续跑</span><span class="switch-track"></span>
+            </div>
+          </div>
+
+          <div class="set-row">
+            <span>挂起超时阈值</span>
+            <div id="thresholdGroup" class="seg-group" role="radiogroup">
+              <button class="seg-btn" data-sec="60" type="button">60s</button>
+              <button class="seg-btn active" data-sec="90" type="button">90s</button>
+              <button class="seg-btn" data-sec="120" type="button">120s</button>
+              <button class="seg-btn" data-sec="0" type="button">关闭</button>
+            </div>
+          </div>
+
+          <div id="heightModeRow" class="set-row">
+            <span>窗口高度模式</span>
+            <button id="resetHeightBtn" class="fit-reset-btn" type="button">↕ 自适应伸缩中</button>
+          </div>
+
+          <div id="opacityRow" class="set-row">
+            <span>背景不透明度</span>
+            <div class="alpha-wrap">
+              <input id="opacitySlider" class="alpha-slider" type="range" min="72" max="100" step="2" value="97" />
+              <span id="opacityVal" class="alpha-val mono-num">97%</span>
+            </div>
+          </div>
+
+          <div id="drawerBottomActions" class="drawer-bottom-actions">
+            <button id="dockBackBtn" class="drawer-action-btn" type="button">↙ 收回至侧边栏</button>
+            <button id="popOutHudBtn" class="drawer-action-btn primary" type="button">⧉ 弹出桌面悬浮窗</button>
+          </div>
+        </div>
+
+        <div id="stackScroll" class="stack-scroll" style="display:none;">
+          <div id="stackList" class="stack-list"></div>
+        </div>
+
+        <footer id="idleFooter" class="idle-footer" data-no-drag="1">
+          <button id="idleToggleBtn" class="idle-bar-btn" type="button">
+            <span id="idleSummaryLabel">🕒 历史空闲 0</span>
+            <span id="idleChevron">展开 ▾</span>
+          </button>
+          <div id="idleList" class="idle-list"></div>
+        </footer>
+      </section>
+    </div>
+
+    <!-- 2. Embedded HUD Dock Controller (When Desktop HUD Is Running) -->
+    <section id="dockPanel" class="dock-panel" aria-label="桌面悬浮窗停靠控制台">
+      <div class="dock-head">
+        <div class="dock-status">
+          <span id="dockConnDot" class="dock-live-dot"></span>
+          <span>桌面悬浮窗运行中</span>
+        </div>
+      </div>
+      <div class="dock-summary-box">
+        <span id="dockSummaryText">0 运行中 · 0 待处理</span>
+        <span id="dockLiveTps" class="global-tps-badge idle"><span class="gtps-bolt" aria-hidden="true">⚡</span><span class="gtps-lbl">总计</span><span id="dockLiveTpsVal" class="gtps-val mono-num">0.0 tok/s</span></span>
+      </div>
+      <div class="dock-btn-grid">
+        <button id="dockFlashBtn" class="dock-btn" type="button">🎯 闪烁定位悬浮窗</button>
+        <button id="dockResetPosBtn" class="dock-btn" type="button">↺ 重置窗口位置</button>
+        <button id="dockAutoFitBtn" class="dock-btn" type="button" style="grid-column: 1 / -1;">↕ 恢复自适应高度</button>
+        <button id="dockRecallBtn" class="dock-btn full-span" type="button">↙ 收回至侧边栏</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Keyed Task Card DOM Template -->
+  <template id="taskCardTpl">
+    <article class="task-card">
+      <div class="card-row1">
+        <div class="card-title-wrap" data-role="titleWrap">
+          <span class="card-dot" data-role="cardDot"></span>
+          <span class="ws-badge" data-role="wsBadge" style="display:none;"></span>
+          <span class="card-title" data-role="title">会话</span>
+        </div>
+        <div class="card-ctrl">
+          <button class="tiny-icon-btn" data-role="pinBtn" type="button" title="固定在主栈">☆</button>
+          <button class="tiny-icon-btn" data-role="hideRecentBtn" type="button" style="display:none;" title="归档至空闲栏">✕</button>
+        </div>
+      </div>
+
+      <div class="card-meta-row" data-role="metaRow">
+        <div class="card-meta-left">
+          <span class="model-badge" data-role="modelBadge">Auto</span>
+          <span class="branch-badge mono-num" data-role="branchBadge"></span>
+        </div>
+        <span class="usage-chip mono-num" data-role="usageChip"></span>
+      </div>
+
+      <div class="ctx-block">
+        <div class="ctx-row">
+          <span class="ctx-readout" data-role="ctxReadout">
+            <span class="ctx-pct-val mono-num" data-role="ctxPct">0.0%</span>
+            <span class="ctx-tok-sub mono-num" data-role="ctxTok">0k / 512k</span>
+          </span>
+          <span class="speed-badge empty" data-role="speedBadge">-- tok/s</span>
+        </div>
+        <div class="bar-hit" data-role="barHit">
+          <div class="bar-track" data-role="barTrack">
+            <div class="bar-seg sys" data-role="segSys" style="width:0%"></div>
+            <div class="bar-seg ext" data-role="segExt" style="width:0%;display:none"></div>
+            <div class="bar-seg tools" data-role="segTools" style="width:0%"></div>
+            <div class="bar-seg chat" data-role="segChat" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="inline-drawer-wrap" data-role="drawerWrap">
+        <div class="inline-drawer-inner">
+          <div class="inline-drawer-box selectable" data-role="drawerBox"></div>
+        </div>
+      </div>
+
+      <div class="step-row" data-role="stepRow" style="display:none;">
+        <div class="step-info" data-role="stepInfo">
+          <span data-role="stepWarnIcon" style="display:none;flex-shrink:0;font-size:11px;">⚠️</span>
+          <span class="status-dot" data-role="stepDot"></span>
+          <span class="step-text">
+            <span data-role="stepLabel"></span><span data-role="stepTimerWrap" style="display:none;"> · <span class="mono-num" data-role="stepElapsed">0.0s</span></span>
+          </span>
+        </div>
+        <div class="step-actions">
+          <button class="mini-btn wake" data-role="wakeBtn" type="button">⚡ 唤醒</button>
+          <button class="mini-btn run-act danger" data-role="cancelBtn" type="button">⏹ 中断步骤</button>
+        </div>
+      </div>
+
+      <div class="sub-section" data-role="subSection">
+        <div class="swarm-bar" data-role="swarmBar">
+          <span class="swarm-bar-left" data-role="swarmLeft">🐝 蜂群合计 · 0/0 运行</span>
+          <span class="swarm-bar-right">
+            <span class="swarm-sep" aria-hidden="true">|</span>
+            <span class="speed-badge empty" data-role="swarmSpeed">⚡ 0.0 tok/s</span>
+            <span class="swarm-chevron" data-role="swarmChevron">▴</span>
+          </span>
+        </div>
+        <div class="sub-list" data-role="subList"></div>
+      </div>
+    </article>
+  </template>
+
+  <script>
+(function () {
+  "use strict";
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const isHudMode = (urlParams.get("mode") || "").toLowerCase() === "hud";
+  let hostConversationId = urlParams.get("conversationId") || "";
+
+  const modeCls = isHudMode ? "mode-hud" : "mode-embed";
+  document.documentElement.classList.add(modeCls);
+  document.body.classList.add(modeCls);
+  document.documentElement.setAttribute("data-theme", "light");
+
+  const el = (id) => document.getElementById(id);
+
+  /* ---------- Geometry & Adaptive Polling Constants ---------- */
+  const HUD_DEFAULT_WIDTH = 388;
+  const HUD_MIN_WIDTH = 320;
+  const HUD_MAX_WIDTH = 960;
+  const HUD_PILL_HEIGHT = 36;
+  const HUD_STACK_MIN_H = 68;
+  const HUD_CUSTOM_MAX_H = 4096;
+  const HUD_DPI_SUBPIXEL_PAD = 2;
+  const GLOBAL_TPS_HOLD_MS = 650;
+
+  const POLL_STREAM_MS = 250;
+  const POLL_RUNNING_MS = 500;
+  const POLL_IDLE_MS = 800;
+  const POLL_DOCK_MS = 2500;
+  const TICK_INTERVAL_MS = 250;
+
+  /* ---------- Static Mode Visibility ---------- */
+  el("popOutHudBtn").style.display = !isHudMode ? "inline-flex" : "none";
+  el("alwaysOnTopRow").style.display = isHudMode ? "flex" : "none";
+  el("opacityRow").style.display = isHudMode ? "flex" : "none";
+  el("heightModeRow").style.display = isHudMode ? "flex" : "none";
+  el("dockBackBtn").style.display = isHudMode ? "inline-flex" : "none";
+
+  /* ---------- State Store ---------- */
+  let watchdogConfig = { autoHealStream: true, stallThresholdSec: 90 };
+  let fastIoConfig = { mcpEnabled: true };
+  let fastIoStats = {
+    batchReadCalls: 0, batchReadFiles: 0, grepCalls: 0, globCalls: 0,
+    outlineCalls: 0, savedSecEstimate: 0.0,
+  };
+
+  const initVmParam = (urlParams.get("viewMode") || "").toLowerCase();
+  let hudPrefs = {
+    enabled: true,
+    viewMode: (initVmParam === "pill" || initVmParam === "stack") ? initVmParam : "pill",
+    alwaysOnTop: true,
+    opacity: 0.97,
+    theme: "light",
+    width: HUD_DEFAULT_WIDTH,
+    customHeight: null,
+    x: null,
+    y: null,
+    anchorCorner: "top-right",
+    pinnedIds: [],
+  };
+
+  let hudRuntimeRunning = false;
+  let embedCollapsed = true;
+  let settingsOpen = false;
+  let idleDrawerOpen = false;
+  let manualIdleExpanded = false;
+  let manualActiveCollapsed = false;
+  let prevHadActiveCards = null;
+  let lastHasActiveCards = false;
+  let configDirtyUntil = 0;
+  let prefsDirtyUntil = 0;
+
+  let pollInFlight = false;
+  let pollTimerId = null;
+  let pollIntervalMs = POLL_IDLE_MS;
+  let pollQueuedImmediate = false;
+  let pollQueuedForceFull = false;
+  let fastPollBoostUntil = 0;
+  let lastPollCompletedAt = 0;
+
+  let lastRev = null;
+  let lastFullPayload = null;
+  let stackDomDirty = false;
+  let isConnOffline = false;
+  let earliestRecentExpireAtMs = 0;
+
+  let lastRunningCount = 0;
+  let lastAlertCount = 0;
+  let lastHasLiveStream = false;
+  let lastCalmClassState = true;
+
+  let heldGlobalLiveTps = 0;
+  let heldGlobalLiveAtMs = 0;
+  let heldDropPolls = 0;
+  let antiFlickerTimerId = null;
+
+  let lastIdleCandidates = [];
+  let lastTotalIdleCount = 0;
+  let lastAutoComputedHeight = 260;
+
+  let isUserNativeResizing = false;
+  let activeResizeEdge = "";
+  let nativeResizeGuardTimer = null;
+  let tickTimerId = null;
+
+  const cardRecords = new Map();
+  const timerRegistry = new Map();
+  const archivedRecentKeys = new Set();
+
+  const perfStats = {
+    pollsTotal: 0,
+    pollsShortCircuited: 0,
+    lastPollExecMs: 0,
+    stackRenders: 0,
+    pillShortCircuits: 0,
+    activeTimerRunning: false,
+    isCalm: true,
+    lastRev: null,
+    pollIntervalMs: POLL_IDLE_MS,
+  };
+  window.__FP_PERF__ = perfStats;
+
+  /* ---------- Formatting Helpers ---------- */
+  const num = (v, fb = 0) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : fb; };
+  const optNum = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const fmtK = (t) => {
+    const n = num(t, 0);
+    if (n <= 0) return "0k";
+    const k = n / 1000;
+    return k >= 100 || Math.abs(k - Math.round(k)) < 0.05 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
+  };
+  const fmtTok = (t) => {
+    const v = num(t, 0);
+    if (v < 1000) return `${Math.round(v)}`;
+    if (v < 1000000) return `${(v / 1000).toFixed(v >= 100000 ? 0 : 1).replace(/\.0$/, "")}k`;
+    return `${(v / 1000000).toFixed(2).replace(/\.?0+$/, "")}M`;
+  };
+  const fmtDuration = (sec) => {
+    const s = num(sec, 0);
+    if (s < 60) return `${s.toFixed(1)}s`;
+    const m = Math.floor(s / 60), rem = Math.floor(s % 60);
+    return m < 60 ? `${m}m ${rem}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  };
+  const fmtElapsed = (sec) => {
+    const s = Math.max(0, Math.floor(num(sec, 0)));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), rem = s % 60;
+    return m < 60 ? `${m}m ${rem}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  };
+  const fmtPctCompact = (p) => {
+    const v = num(p, 0);
+    return Math.abs(v - Math.round(v)) < 0.05 ? `${Math.round(v)}%` : `${v.toFixed(1)}%`;
+  };
+  const fmtRate = (r) => { const v = num(r, 0); return v >= 1000 ? `${Math.round(v)}` : v.toFixed(1); };
+  const fmtSavedSec = (sec) => {
+    const v = num(sec, 0);
+    if (v <= 0) return "0";
+    return v >= 10 || Math.abs(v - Math.round(v)) < 0.08 ? `${Math.round(v)}` : v.toFixed(1);
+  };
+  const fmtTtft = (ms) => {
+    const v = num(ms, 0);
+    return v <= 0 ? "--" : (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`);
+  };
+  const shortCid = (cid) => (cid && cid.length > 8 ? cid.slice(0, 8) : cid || "");
+  const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  function setTextIfChanged(node, text) {
+    if (node && node.textContent !== text) node.textContent = text;
+  }
+
+  /* ---------- Dynamic Stopwatch & Calm Animation Hibernation ---------- */
+  function stopTickTimer() {
+    if (tickTimerId !== null) {
+      clearInterval(tickTimerId);
+      tickTimerId = null;
+      perfStats.activeTimerRunning = false;
+    }
+  }
+
+  function tickElapsedTimers() {
+    if (
+      timerRegistry.size === 0 ||
+      document.hidden ||
+      (isHudMode && hudPrefs.viewMode === "pill") ||
+      (!isHudMode && (hudRuntimeRunning || embedCollapsed))
+    ) {
+      stopTickTimer();
+      return;
+    }
+    const now = performance.now();
+    let liveCnt = 0;
+    for (const [k, item] of timerRegistry.entries()) {
+      if (item.el && item.el.isConnected) {
+        liveCnt++;
+        const secNow = item.baseSec + (now - item.syncedAtMs) / 1000;
+        const text = typeof item.format === "function" ? item.format(secNow) : fmtDuration(secNow);
+        setTextIfChanged(item.el, text);
+      } else {
+        timerRegistry.delete(k);
+      }
+    }
+    if (liveCnt === 0) stopTickTimer();
+  }
+
+  function syncTickTimer() {
+    const shouldRun =
+      timerRegistry.size > 0 &&
+      !document.hidden &&
+      !(isHudMode && hudPrefs.viewMode === "pill") &&
+      !(!isHudMode && (hudRuntimeRunning || embedCollapsed));
+    if (shouldRun) {
+      if (tickTimerId === null) {
+        tickTimerId = setInterval(tickElapsedTimers, TICK_INTERVAL_MS);
+        perfStats.activeTimerRunning = true;
+      }
+    } else {
+      stopTickTimer();
+    }
+  }
+
+  function syncCalmAnimationFreeze() {
+    const shouldBeCalm = Boolean(document.hidden || (!lastHasLiveStream && lastAlertCount === 0));
+    if (shouldBeCalm !== lastCalmClassState) {
+      lastCalmClassState = shouldBeCalm;
+      document.body.classList.toggle("is-calm", shouldBeCalm);
+    }
+    perfStats.isCalm = shouldBeCalm;
+  }
+
+  function computeAdaptivePollInterval() {
+    if ((!isHudMode && hudRuntimeRunning) || (!isHudMode && document.hidden)) {
+      return POLL_DOCK_MS;
+    }
+    if (lastHasLiveStream || Date.now() < fastPollBoostUntil) {
+      return POLL_STREAM_MS;
+    }
+    if (lastRunningCount > 0 || lastAlertCount > 0) {
+      return POLL_RUNNING_MS;
+    }
+    return POLL_IDLE_MS;
+  }
+
+  /* ---------- Auth & API ---------- */
+  function getAuthToken() {
+    let stored = "";
+    try { stored = sessionStorage.getItem("__fp_hud_token__") || ""; } catch (_) {}
+    return String(window.__FP_HUD_TOKEN__ || stored || urlParams.get("token") || "").trim();
+  }
+
+  async function apiFetch(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (options.method && options.method.toUpperCase() !== "GET") {
+      headers.set("Content-Type", "application/json");
+    }
+    const tok = getAuthToken();
+    if (tok) {
+      headers.set("X-Flow-Pilot-Token", tok);
+      headers.set("X-Sidecar-Token", tok);
+    }
+    const resp = await fetch(path, { ...options, headers, cache: "no-store" });
+    const text = await resp.text();
+    let json = {};
+    try { json = text ? JSON.parse(text) : {}; } catch (_) { json = { raw: text }; }
+    if (!resp.ok) throw new Error(json.error || json.message || `HTTP ${resp.status}`);
+    return json;
+  }
+
+  /* ---------- Native Host Window Bridge ---------- */
+  const hasWebViewBridge = () => Boolean(window.chrome && window.chrome.webview && typeof window.chrome.webview.postMessage === "function");
+  let lastSentSize = { w: 0, h: 0, anchor: "", mode: "", idleOpen: false };
+  let resizeRafId = 0;
+  let moveSaveTimer = null;
+  let userResizeSaveTimer = null;
+
+  function postNativeCmd(payload) {
+    window.__FP_LAST_NATIVE_CMD__ = payload;
+    if (!isHudMode) return false;
+    if (hasWebViewBridge()) {
+      try {
+        window.chrome.webview.postMessage(JSON.stringify(payload));
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  let resizeListenersBound = false;
+  function detachNativeResizeListeners() {
+    if (!resizeListenersBound) return;
+    resizeListenersBound = false;
+    window.removeEventListener("mouseup", onNativeResizeMouseUp);
+    window.removeEventListener("mousemove", onNativeResizeMouseMove);
+  }
+
+  function clearIdleNativeResizeFlag() {
+    if (nativeResizeGuardTimer) {
+      clearTimeout(nativeResizeGuardTimer);
+      nativeResizeGuardTimer = null;
+    }
+    detachNativeResizeListeners();
+    isUserNativeResizing = false;
+    activeResizeEdge = "";
+  }
+
+  function onNativeResizeMouseUp() {
+    if (isUserNativeResizing) setTimeout(clearIdleNativeResizeFlag, 120);
+  }
+
+  function onNativeResizeMouseMove(ev) {
+    if (isUserNativeResizing && typeof ev.buttons === "number" && (ev.buttons & 1) === 0) {
+      clearIdleNativeResizeFlag();
+    }
+  }
+
+  function attachNativeResizeListeners() {
+    if (resizeListenersBound || !isHudMode) return;
+    resizeListenersBound = true;
+    window.addEventListener("mouseup", onNativeResizeMouseUp);
+    window.addEventListener("mousemove", onNativeResizeMouseMove);
+  }
+
+  const HostWindowBridge = {
+    dragMove() { postNativeCmd({ cmd: "dragMove" }); },
+    startResize(edge) {
+      if (!isHudMode || !edge) return;
+      isUserNativeResizing = true;
+      activeResizeEdge = String(edge).toLowerCase();
+      attachNativeResizeListeners();
+      if (nativeResizeGuardTimer) clearTimeout(nativeResizeGuardTimer);
+      nativeResizeGuardTimer = setTimeout(clearIdleNativeResizeFlag, 12000);
+      postNativeCmd({ cmd: "startResize", edge: activeResizeEdge });
+    },
+    resize(width, height, anchorCorner, extra = {}) {
+      if (!isHudMode || isUserNativeResizing) return;
+      const w = Math.round(width), h = Math.round(height);
+      const rawAnchor = anchorCorner || hudPrefs.anchorCorner || "top-right";
+      const anchor = String(rawAnchor).endsWith("left") ? "top-left" : "top-right";
+      const idleOpenFlag = Boolean(extra.idleOpen);
+
+      if (
+        lastSentSize.w === w &&
+        lastSentSize.h === h &&
+        lastSentSize.anchor === anchor &&
+        lastSentSize.mode === hudPrefs.viewMode &&
+        lastSentSize.idleOpen === idleOpenFlag
+      ) {
+        return;
+      }
+
+      const sent = postNativeCmd({
+        cmd: "resize",
+        width: w,
+        height: h,
+        anchorCorner: anchor,
+        viewMode: hudPrefs.viewMode,
+        lockTop: extra.lockTop !== false,
+        idleOpen: idleOpenFlag,
+        minHeight: extra.minHeight || HUD_STACK_MIN_H,
+      });
+
+      if (sent) {
+        lastSentSize = { w, h, anchor, mode: hudPrefs.viewMode, idleOpen: idleOpenFlag };
+        el("capsuleUnit").style.width = "";
+        el("capsuleUnit").style.height = "";
+      } else if (!hasWebViewBridge()) {
+        lastSentSize = { w, h, anchor, mode: hudPrefs.viewMode, idleOpen: idleOpenFlag };
+        el("capsuleUnit").style.width = `${w}px`;
+        el("capsuleUnit").style.height = `${h}px`;
+        try { window.resizeTo(w, h); } catch (_) {}
+      }
+    },
+    setTopMost(alwaysOnTop) { postNativeCmd({ cmd: "setTopMost", alwaysOnTop: Boolean(alwaysOnTop) }); },
+    close() {
+      if (!postNativeCmd({ cmd: "close" })) {
+        try { window.close(); } catch (_) {}
+      }
+    },
+  };
+
+  function playFlashAnimation() {
+    const target = el("capsuleUnit");
+    if (!target) return;
+    target.classList.remove("flash-highlight");
+    void target.offsetWidth;
+    target.classList.add("flash-highlight");
+    setTimeout(() => target.classList.remove("flash-highlight"), 1700);
+  }
+
+  function syncHostWorkArea(msg) {
+    if (!msg || typeof msg !== "object") return false;
+    if (typeof msg.availBelowCssPx !== "number" && typeof msg.workBottom !== "number" && typeof msg.workHeight !== "number") {
+      return false;
+    }
+    const prev = (window.__FP_WORK_AREA__ && typeof window.__FP_WORK_AREA__ === "object") ? window.__FP_WORK_AREA__ : {};
+    const prevAvail = prev.availBelowCssPx;
+    const next = { ...prev };
+    for (const k of [
+      "workLeft", "workTop", "workRight", "workBottom", "workWidth", "workHeight",
+      "winX", "winY", "physTop", "physWorkBottom", "dpi", "scale", "availBelowCssPx",
+    ]) {
+      if (typeof msg[k] === "number" && Number.isFinite(msg[k])) next[k] = msg[k];
+    }
+    window.__FP_WORK_AREA__ = next;
+    return next.availBelowCssPx !== prevAvail;
+  }
+
+  const isValidHudCoord = (v) => typeof v === "number" && Number.isFinite(v) && v > -10000 && v < 30000;
+
+  function handleHostIncomingMessage(rawMsg) {
+    let msg = rawMsg;
+    if (typeof msg === "string") {
+      try { msg = JSON.parse(msg); } catch (_) { return; }
+    }
+    if (!msg || typeof msg !== "object") return;
+    const evtName = msg.event || msg.type || msg.cmd || "";
+
+    if (evtName === "workArea") {
+      syncHostWorkArea(msg);
+      if (isValidHudCoord(msg.winX)) hudPrefs.x = Math.round(msg.winX);
+      if (isValidHudCoord(msg.winY)) hudPrefs.y = Math.round(msg.winY);
+      scheduleHudResize();
+    } else if (evtName === "moved") {
+      const availChanged = syncHostWorkArea(msg);
+      const hasValidX = isValidHudCoord(msg.x);
+      const hasValidY = isValidHudCoord(msg.y);
+      if (hasValidX) hudPrefs.x = Math.round(msg.x);
+      if (hasValidY) hudPrefs.y = Math.round(msg.y);
+      if (typeof msg.anchorCorner === "string" && msg.anchorCorner) hudPrefs.anchorCorner = msg.anchorCorner;
+      prefsDirtyUntil = Date.now() + 1600;
+      if (hudPrefs.viewMode === "stack" && availChanged) scheduleHudResize();
+      if (hasValidX || hasValidY) {
+        if (moveSaveTimer) clearTimeout(moveSaveTimer);
+        moveSaveTimer = setTimeout(() => {
+          moveSaveTimer = null;
+          const patch = { anchorCorner: hudPrefs.anchorCorner };
+          if (isValidHudCoord(hudPrefs.x)) patch.x = hudPrefs.x;
+          if (isValidHudCoord(hudPrefs.y)) patch.y = hudPrefs.y;
+          if ("x" in patch || "y" in patch) saveHudPrefs(patch);
+        }, 450);
+      }
+    } else if (evtName === "resizeCancelled") {
+      clearIdleNativeResizeFlag();
+      scheduleHudResize();
+    } else if (evtName === "resetAutoHeight") {
+      resetCustomHeight();
+    } else if (evtName === "userResized") {
+      const usedEdge = String(msg.edge || activeResizeEdge || "").toLowerCase();
+      clearIdleNativeResizeFlag();
+      syncHostWorkArea(msg);
+
+      if (typeof msg.width === "number" && msg.width >= 200) {
+        hudPrefs.width = clamp(Math.round(msg.width), HUD_MIN_WIDTH, HUD_MAX_WIDTH);
+      }
+      if (isValidHudCoord(msg.x)) hudPrefs.x = Math.round(msg.x);
+      if (isValidHudCoord(msg.y)) hudPrefs.y = Math.round(msg.y);
+      if (typeof msg.anchorCorner === "string" && msg.anchorCorner) {
+        hudPrefs.anchorCorner = msg.anchorCorner.endsWith("left") ? "top-left" : "top-right";
+      }
+
+      if (msg.customHeight === null) {
+        hudPrefs.customHeight = null;
+      } else if (hudPrefs.viewMode === "stack" && typeof msg.height === "number" && msg.height >= HUD_STACK_MIN_H) {
+        const hRounded = clamp(Math.round(msg.height), HUD_STACK_MIN_H, HUD_CUSTOM_MAX_H);
+        const isVerticalInteractiveEdge = usedEdge.includes("n") || usedEdge.includes("s");
+        const heightDidChange = msg.heightChanged !== false;
+        if (isVerticalInteractiveEdge && heightDidChange && Math.abs(hRounded - lastAutoComputedHeight) >= 4) {
+          hudPrefs.customHeight = hRounded;
+        }
+      }
+
+      const finalH = hudPrefs.viewMode === "pill"
+        ? HUD_PILL_HEIGHT
+        : (hudPrefs.customHeight != null ? hudPrefs.customHeight : Math.round(num(msg.height, lastAutoComputedHeight)));
+      lastSentSize = {
+        w: hudPrefs.width,
+        h: finalH,
+        anchor: hudPrefs.anchorCorner || "top-right",
+        mode: hudPrefs.viewMode,
+        idleOpen: Boolean(idleDrawerOpen),
+      };
+      if (!hasWebViewBridge() && isHudMode) {
+        el("capsuleUnit").style.width = `${hudPrefs.width}px`;
+        if (hudPrefs.viewMode === "stack" && hudPrefs.customHeight != null) {
+          el("capsuleUnit").style.height = `${hudPrefs.customHeight}px`;
+        }
+      }
+
+      prefsDirtyUntil = Date.now() + 1800;
+      syncSettingControlsUI();
+      lastSentSize.w = 0;
+      scheduleHudResize();
+
+      if (userResizeSaveTimer) clearTimeout(userResizeSaveTimer);
+      userResizeSaveTimer = setTimeout(() => {
+        userResizeSaveTimer = null;
+        const patch = {
+          width: hudPrefs.width,
+          customHeight: hudPrefs.customHeight,
+          anchorCorner: hudPrefs.anchorCorner,
+        };
+        if (isValidHudCoord(hudPrefs.x)) patch.x = hudPrefs.x;
+        if (isValidHudCoord(hudPrefs.y)) patch.y = hudPrefs.y;
+        saveHudPrefs(patch);
+      }, 360);
+    } else if (evtName === "flash") {
+      playFlashAnimation();
+    }
+  }
+
+  if (hasWebViewBridge() && typeof window.chrome.webview.addEventListener === "function") {
+    window.chrome.webview.addEventListener("message", (ev) => handleHostIncomingMessage(ev && ev.data));
+  }
+  if (isHudMode) {
+    window.addEventListener("message", (ev) => handleHostIncomingMessage(ev && ev.data));
+  }
+
+  /* ---------- Light-Only Appearance & Opacity ---------- */
+  let lastAppliedAlpha = "";
+  function applyAppearance() {
+    if (document.documentElement.getAttribute("data-theme") !== "light") {
+      document.documentElement.setAttribute("data-theme", "light");
+    }
+    const alphaStr = (isHudMode ? clamp(Number(hudPrefs.opacity) || 0.97, 0.72, 1) : 1).toFixed(2);
+    if (alphaStr !== lastAppliedAlpha) {
+      lastAppliedAlpha = alphaStr;
+      document.documentElement.style.setProperty("--fp-win-alpha", alphaStr);
+    }
+  }
+
+  /* ---------- Embedded Host Bridge ---------- */
+  if (!isHudMode) {
+    window.addEventListener("message", (event) => {
+      const data = event && event.data;
+      if (!data || typeof data !== "object") return;
+      if (data.type === "conversation-change") {
+        const nextCid = (data.payload && data.payload.conversationId) ?? data.conversationId ?? "";
+        if (typeof nextCid === "string" && nextCid.trim() !== hostConversationId) {
+          hostConversationId = nextCid.trim();
+          fastPollBoostUntil = Date.now() + 2500;
+          if (lastFullPayload) renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+          pollNow(true);
+        }
+      }
+    });
+
+    if (window.parent && window.parent !== window) {
+      const PURE_MODIFIER_KEYS = new Set(["Control", "Meta", "Alt", "Shift", "AltGraph"]);
+      const EDITABLE_NAV_KEYS = new Set(["arrowleft", "arrowright", "arrowup", "arrowdown", "home", "end"]);
+      const NON_TEXT_INPUT_TYPES = new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]);
+      const forwardedKeyIds = new Set();
+
+      const isContentEditable = (target) => {
+        if (!target || typeof target !== "object") return false;
+        if (target.isContentEditable) return true;
+        if (typeof target.closest !== "function") return false;
+        const ce = target.closest("[contenteditable]");
+        return Boolean(ce && ce.getAttribute("contenteditable") !== "false");
+      };
+
+      const isEditableTarget = (target) => {
+        if (!target || typeof target !== "object") return false;
+        const tag = typeof target.tagName === "string" ? target.tagName.toUpperCase() : "";
+        if (tag === "TEXTAREA" || tag === "SELECT") return !target.disabled && !target.readOnly;
+        if (tag === "INPUT") {
+          const inputType = typeof target.type === "string" ? target.type.toLowerCase() : "text";
+          return !NON_TEXT_INPUT_TYPES.has(inputType) && !target.disabled && !target.readOnly;
+        }
+        if (isContentEditable(target)) return true;
+        if (typeof target.closest === "function") {
+          const textbox = target.closest('[role="textbox"]');
+          if (textbox && textbox.getAttribute("aria-disabled") !== "true") return true;
+        }
+        return false;
+      };
+
+      const isNativeClipboardChord = (e, keyLower) =>
+        (e.ctrlKey || e.metaKey) && !e.altKey && ((!e.shiftKey && (keyLower === "c" || keyLower === "x")) || keyLower === "v");
+
+      const isEditableTextChord = (e, keyLower) => {
+        if (!e.ctrlKey && !e.metaKey && (!e.altKey || (typeof e.key === "string" && e.key.length <= 1))) return true;
+        if (EDITABLE_NAV_KEYS.has(keyLower)) return true;
+        if (!e.shiftKey && (keyLower === "backspace" || keyLower === "delete")) return true;
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && ((!e.shiftKey && (keyLower === "a" || keyLower === "y")) || keyLower === "z")) return true;
+        return false;
+      };
+
+      const isRichTextFormattingChord = (e, keyLower) =>
+        (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (keyLower === "b" || keyLower === "i" || keyLower === "u");
+
+      const shouldForwardKeyDown = (e) => {
+        if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return false;
+        if (typeof e.key !== "string" || PURE_MODIFIER_KEYS.has(e.key)) return false;
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) return false;
+        if (typeof e.getModifierState === "function" && e.getModifierState("AltGraph")) return false;
+        const keyLower = e.key.toLowerCase();
+        if (isNativeClipboardChord(e, keyLower)) return false;
+        const rawTarget = (typeof e.composedPath === "function" && e.composedPath()[0]) || e.target;
+        if (isEditableTarget(rawTarget) && isEditableTextChord(e, keyLower)) return false;
+        if (isContentEditable(rawTarget) && isRichTextFormattingChord(e, keyLower)) return false;
+        return true;
+      };
+
+      const getKeyTrackingId = (e) => e.code || (typeof e.key === "string" ? e.key.toLowerCase() : "");
+
+      const postKeyEvent = (e) => {
+        window.parent.postMessage({
+          type: "sidecar-key-event",
+          payload: {
+            eventType: e.type,
+            key: e.key,
+            code: e.code || "",
+            ctrlKey: Boolean(e.ctrlKey),
+            metaKey: Boolean(e.metaKey),
+            altKey: Boolean(e.altKey),
+            shiftKey: Boolean(e.shiftKey),
+            repeat: Boolean(e.repeat),
+          },
+        }, "*");
+      };
+
+      window.addEventListener("keydown", (e) => {
+        if (!shouldForwardKeyDown(e)) return;
+        const trackingId = getKeyTrackingId(e);
+        if (trackingId) forwardedKeyIds.add(trackingId);
+        postKeyEvent(e);
+      });
+
+      window.addEventListener("keyup", (e) => {
+        if (e.isComposing || e.keyCode === 229 || typeof e.key !== "string") return;
+        const trackingId = getKeyTrackingId(e);
+        const wasForwarded = trackingId && forwardedKeyIds.delete(trackingId);
+        if (wasForwarded || (forwardedKeyIds.size > 0 && e.key === "Meta")) {
+          if (e.key === "Meta") forwardedKeyIds.clear();
+          postKeyEvent(e);
+        }
+      });
+
+      window.addEventListener("blur", () => {
+        forwardedKeyIds.clear();
+      });
+    }
+  }
+
+  /* ---------- HUD Equal-Width True Full-Content Auto-Fit Engine ---------- */
+  function getAvailableBelowCssPx() {
+    if (typeof window.availBelowCssPx === "number" && Number.isFinite(window.availBelowCssPx) && window.availBelowCssPx > 0) {
+      return Math.max(HUD_STACK_MIN_H, Math.floor(window.availBelowCssPx));
+    }
+    if (typeof window.__FP_AVAIL_BELOW_CSS_PX__ === "number" && Number.isFinite(window.__FP_AVAIL_BELOW_CSS_PX__) && window.__FP_AVAIL_BELOW_CSS_PX__ > 0) {
+      return Math.max(HUD_STACK_MIN_H, Math.floor(window.__FP_AVAIL_BELOW_CSS_PX__));
+    }
+    const wa = window.__FP_WORK_AREA__;
+    if (wa && typeof wa === "object") {
+      if (typeof wa.availBelowCssPx === "number" && Number.isFinite(wa.availBelowCssPx) && wa.availBelowCssPx > 0) {
+        return Math.max(HUD_STACK_MIN_H, Math.floor(wa.availBelowCssPx));
+      }
+      if (typeof wa.workBottom === "number" && Number.isFinite(wa.workBottom)) {
+        const topY = typeof wa.winY === "number"
+          ? wa.winY
+          : (typeof hudPrefs.y === "number" ? hudPrefs.y : (wa.workTop || 0) + 16);
+        return Math.max(HUD_STACK_MIN_H, Math.floor(wa.workBottom - topY) - 6);
+      }
+    }
+
+    const qAvail = urlParams.get("availBelowCssPx");
+    if (qAvail !== null && qAvail !== "" && Number.isFinite(Number(qAvail)) && Number(qAvail) > 0) {
+      return Math.max(HUD_STACK_MIN_H, Math.floor(Number(qAvail)));
+    }
+
+    const screenAvailH = (window.screen && typeof window.screen.availHeight === "number") ? window.screen.availHeight : 0;
+    const screenAvailTop = (window.screen && typeof window.screen.availTop === "number") ? window.screen.availTop : 0;
+    if (hasWebViewBridge()) {
+      if (screenAvailH > 0) {
+        if (typeof hudPrefs.y === "number" && hudPrefs.y >= screenAvailTop && hudPrefs.y < screenAvailTop + screenAvailH - HUD_STACK_MIN_H) {
+          return Math.max(HUD_STACK_MIN_H, Math.floor(screenAvailTop + screenAvailH - hudPrefs.y) - 6);
+        }
+        return Math.max(HUD_STACK_MIN_H, Math.floor(screenAvailH - 24));
+      }
+      return 1056;
+    }
+
+    const viewportH = typeof window.innerHeight === "number" ? window.innerHeight : 0;
+    const previewAvailH = Math.max(screenAvailH, viewportH);
+    return Math.max(HUD_STACK_MIN_H, Math.floor((previewAvailH > 0 ? previewAvailH : 1080) - 24));
+  }
+
+  function measureBlockOuterH(node, fallback = 0) {
+    if (!node) return fallback;
+    const rectH = node.getBoundingClientRect ? node.getBoundingClientRect().height : 0;
+    const rawH = Math.max(rectH, node.offsetHeight || 0);
+    return rawH > 0 ? Math.ceil(rawH) : fallback;
+  }
+
+  function measureNaturalScrollBoxH(node) {
+    if (!node) return 0;
+    const borderH = Math.max(0, (node.offsetHeight || 0) - (node.clientHeight || 0));
+    const scrollH = (node.scrollHeight || 0) + borderH;
+    const rectH = node.getBoundingClientRect ? node.getBoundingClientRect().height : 0;
+    return Math.ceil(Math.max(scrollH, node.style.maxHeight && node.style.maxHeight !== "none" ? 0 : rectH));
+  }
+
+  function computeIntrinsicHudSize() {
+    const targetW = clamp(Math.round(num(hudPrefs.width, HUD_DEFAULT_WIDTH)), HUD_MIN_WIDTH, HUD_MAX_WIDTH);
+    const capsuleEl = el("capsuleUnit");
+    if (isHudMode && !hasWebViewBridge()) {
+      capsuleEl.style.width = `${targetW}px`;
+    }
+
+    if (hudPrefs.viewMode === "pill") {
+      if (isHudMode && !hasWebViewBridge()) {
+        capsuleEl.style.height = "";
+      }
+      return {
+        width: targetW,
+        height: HUD_PILL_HEIGHT,
+        lockTop: true,
+        idleOpen: false,
+        minHeight: HUD_PILL_HEIGHT,
+      };
+    }
+
+    const stackScrollEl = el("stackScroll");
+    const stackListEl = el("stackList");
+    const setDrawerEl = el("settingsDrawer");
+    const idleFooterEl = el("idleFooter");
+    const idleToggleEl = el("idleToggleBtn");
+    const idleListEl = el("idleList");
+
+    if (!isHudMode) {
+      const noActive = idleFooterEl.classList.contains("no-active");
+      idleListEl.style.maxHeight = noActive ? "none" : "240px";
+      idleListEl.style.overflowY = noActive ? "visible" : "auto";
+      setDrawerEl.style.maxHeight = "none";
+      setDrawerEl.style.overflowY = "visible";
+      return { width: targetW, height: 480, lockTop: true, idleOpen: false, minHeight: HUD_STACK_MIN_H };
+    }
+
+    const shellBorderH = 2;
+    const pillH = measureBlockOuterH(el("pillShell"), 34);
+    const setNaturalH = settingsOpen ? measureNaturalScrollBoxH(setDrawerEl) : 0;
+    const hasActiveCards = stackScrollEl.style.display !== "none" && stackListEl.children.length > 0;
+    const listNaturalH = hasActiveCards ? Math.max(48, measureNaturalScrollBoxH(stackListEl)) : 0;
+    const idleVisible = idleFooterEl.classList.contains("visible");
+    const idleBarVisible = idleVisible && idleToggleEl.style.display !== "none";
+    const idleBarH = idleBarVisible ? measureBlockOuterH(idleToggleEl, 28) : 0;
+    const isIdleListOpen = idleVisible && idleListEl.classList.contains("open");
+    const idleListNaturalH = isIdleListOpen ? measureNaturalScrollBoxH(idleListEl) : 0;
+
+    const naturalTotalH = Math.max(
+      HUD_STACK_MIN_H,
+      Math.ceil(shellBorderH + pillH + setNaturalH + listNaturalH + idleBarH + idleListNaturalH + HUD_DPI_SUBPIXEL_PAD)
+    );
+
+    const availScreenMaxH = getAvailableBelowCssPx();
+    const isManualH = typeof hudPrefs.customHeight === "number" && hudPrefs.customHeight >= HUD_STACK_MIN_H;
+    const autoTargetH = Math.min(naturalTotalH, availScreenMaxH);
+    lastAutoComputedHeight = autoTargetH;
+
+    const targetH = isManualH
+      ? clamp(Math.round(hudPrefs.customHeight), HUD_STACK_MIN_H, Math.min(HUD_CUSTOM_MAX_H, availScreenMaxH))
+      : autoTargetH;
+
+    const needsScrollCap = naturalTotalH > targetH;
+
+    capsuleEl.classList.toggle("manual-height", isManualH);
+    capsuleEl.classList.toggle("scroll-capped", needsScrollCap);
+
+    if (!needsScrollCap) {
+      setDrawerEl.style.maxHeight = "none";
+      setDrawerEl.style.overflowY = "hidden";
+      if (setDrawerEl.scrollTop !== 0) setDrawerEl.scrollTop = 0;
+
+      idleListEl.style.maxHeight = "none";
+      idleListEl.style.overflowY = "hidden";
+      if (idleListEl.scrollTop !== 0) idleListEl.scrollTop = 0;
+
+      if (stackScrollEl.scrollTop !== 0) stackScrollEl.scrollTop = 0;
+    } else {
+      const fixedBarsH = shellBorderH + pillH + idleBarH;
+      const middleBudget = Math.max(32, targetH - fixedBarsH);
+      const minActiveScrollH = hasActiveCards
+        ? Math.min(listNaturalH, Math.max(56, Math.min(108, Math.floor(middleBudget * 0.42))))
+        : 0;
+
+      if (setNaturalH + idleListNaturalH + minActiveScrollH <= middleBudget) {
+        setDrawerEl.style.maxHeight = "none";
+        setDrawerEl.style.overflowY = "hidden";
+        idleListEl.style.maxHeight = "none";
+        idleListEl.style.overflowY = "hidden";
+      } else {
+        const drawerBudget = Math.max(0, middleBudget - minActiveScrollH);
+        if (settingsOpen && isIdleListOpen) {
+          const setShare = Math.max(48, Math.min(setNaturalH, Math.floor(drawerBudget * 0.56)));
+          const idleShare = Math.max(40, Math.min(idleListNaturalH, Math.max(40, drawerBudget - setShare)));
+          setDrawerEl.style.maxHeight = `${setShare}px`;
+          setDrawerEl.style.overflowY = setNaturalH > setShare ? "auto" : "hidden";
+          idleListEl.style.maxHeight = `${idleShare}px`;
+          idleListEl.style.overflowY = idleListNaturalH > idleShare ? "auto" : "hidden";
+        } else if (settingsOpen) {
+          const setCap = Math.max(48, drawerBudget);
+          setDrawerEl.style.maxHeight = `${setCap}px`;
+          setDrawerEl.style.overflowY = setNaturalH > setCap ? "auto" : "hidden";
+          idleListEl.style.maxHeight = "none";
+          idleListEl.style.overflowY = "hidden";
+        } else if (isIdleListOpen) {
+          setDrawerEl.style.maxHeight = "none";
+          setDrawerEl.style.overflowY = "hidden";
+          const idleCap = Math.max(40, drawerBudget);
+          idleListEl.style.maxHeight = `${idleCap}px`;
+          idleListEl.style.overflowY = idleListNaturalH > idleCap ? "auto" : "hidden";
+        }
+      }
+    }
+
+    const minGuaranteeH = Math.min(
+      availScreenMaxH,
+      Math.max(HUD_STACK_MIN_H, shellBorderH + pillH + (hasActiveCards ? Math.min(listNaturalH, 96) : 0) + idleBarH)
+    );
+
+    return {
+      width: targetW,
+      height: targetH,
+      naturalHeight: naturalTotalH,
+      availBelowCssPx: availScreenMaxH,
+      capped: needsScrollCap,
+      lockTop: true,
+      idleOpen: Boolean(hasActiveCards && idleDrawerOpen),
+      minHeight: Math.ceil(minGuaranteeH),
+    };
+  }
+
+  function scheduleHudResize() {
+    if (!isHudMode || isUserNativeResizing) return;
+    if (resizeRafId) cancelAnimationFrame(resizeRafId);
+    resizeRafId = requestAnimationFrame(() => {
+      resizeRafId = 0;
+      if (isUserNativeResizing) return;
+      const sz = computeIntrinsicHudSize();
+      HostWindowBridge.resize(sz.width, sz.height, hudPrefs.anchorCorner, {
+        lockTop: sz.lockTop,
+        idleOpen: sz.idleOpen,
+        minHeight: sz.minHeight,
+      });
+    });
+  }
+
+  function resetCustomHeight() {
+    clearIdleNativeResizeFlag();
+    hudPrefs.customHeight = null;
+    el("capsuleUnit").classList.remove("manual-height");
+    lastSentSize = { w: 0, h: 0, anchor: "", mode: "", idleOpen: false };
+    saveHudPrefs({ customHeight: null }, "reset_auto_height");
+    scheduleHudResize();
+  }
+
+  if (isHudMode) {
+    window.addEventListener("resize", () => {
+      if (!isUserNativeResizing && hudPrefs.viewMode === "stack") scheduleHudResize();
+    });
+    window.__FP_RECOMPUTE_HUD_SIZE__ = () => {
+      const sz = computeIntrinsicHudSize();
+      HostWindowBridge.resize(sz.width, sz.height, hudPrefs.anchorCorner, {
+        lockTop: sz.lockTop,
+        idleOpen: sz.idleOpen,
+        minHeight: sz.minHeight,
+      });
+      return sz;
+    };
+  }
+
+  if (isHudMode && typeof ResizeObserver === "function") {
+    const ro = new ResizeObserver(() => {
+      if (!isUserNativeResizing && hudPrefs.viewMode === "stack" && !document.hidden) {
+        scheduleHudResize();
+      }
+    });
+    ro.observe(el("stackList"));
+    ro.observe(el("settingsDrawer"));
+    ro.observe(el("idleFooter"));
+    ro.observe(el("idleList"));
+  }
+
+  /* ---------- Bind 8-Way Resize Handles & Unified Pill Interactions ---------- */
+  let lastResizeEdgeDownAt = 0;
+  let lastResizeEdgeDownName = "";
+  el("resizeLayer").querySelectorAll("[data-resize-edge]").forEach((handleEl) => {
+    const edge = handleEl.getAttribute("data-resize-edge") || "";
+    const isVerticalResetEdge = ["n", "s", "se", "sw"].includes(edge);
+    handleEl.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const now = Date.now();
+      if (isVerticalResetEdge && (e.detail >= 2 || (lastResizeEdgeDownName === edge && now - lastResizeEdgeDownAt < 360))) {
+        lastResizeEdgeDownAt = 0;
+        lastResizeEdgeDownName = "";
+        resetCustomHeight();
+        return;
+      }
+      lastResizeEdgeDownAt = now;
+      lastResizeEdgeDownName = edge;
+      HostWindowBridge.startResize(edge);
+    });
+    if (isVerticalResetEdge) {
+      handleEl.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        resetCustomHeight();
+      });
+    }
+  });
+
+  function syncExpansionStateAfterUserAction() {
+    el("settingsDrawer").classList.toggle("open", settingsOpen);
+    el("pillSettingsBtn").classList.toggle("active", settingsOpen);
+    if (lastFullPayload) {
+      renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+      return;
+    }
+    const shouldExpand = Boolean(settingsOpen);
+    if (isHudMode) {
+      const nextVm = shouldExpand ? "stack" : "pill";
+      if (hudPrefs.viewMode !== nextVm) {
+        hudPrefs.viewMode = nextVm;
+        lastSentSize = { w: 0, h: 0, anchor: "", mode: "", idleOpen: false };
+        if (nextVm === "stack") stackDomDirty = false;
+        saveHudPrefs({ viewMode: nextVm });
+      }
+      el("capsuleUnit").classList.toggle("expanded", shouldExpand);
+      if (!shouldExpand && !hasWebViewBridge()) el("capsuleUnit").style.height = "";
+      scheduleHudResize();
+    } else {
+      embedCollapsed = !shouldExpand;
+      el("capsuleUnit").classList.toggle("expanded", shouldExpand);
+    }
+  }
+
+  function toggleCapsuleExpandCollapse() {
+    const cu = el("capsuleUnit");
+    if (cu && cu.classList.contains("expanded")) {
+      settingsOpen = false;
+      if (lastHasActiveCards) manualActiveCollapsed = true;
+      else manualIdleExpanded = false;
+    } else {
+      if (lastHasActiveCards) manualActiveCollapsed = false;
+      else if (lastIdleCandidates.length > 0) manualIdleExpanded = true;
+      else return;
+    }
+    syncExpansionStateAfterUserAction();
+  }
+
+  (function bindPillInteractions() {
+    const pillEl = el("pillShell");
+    if (!pillEl) return;
+    let lastMouseUpHandledAt = 0;
+    let lastDragTriggeredAt = 0;
+
+    if (isHudMode) {
+      pillEl.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        if (e.target instanceof Element && e.target.closest("[data-no-drag]")) return;
+        const downX = e.screenX, downY = e.screenY;
+        let dragged = false;
+        const cleanup = () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+        };
+        const onMove = (ev) => {
+          if ((ev.buttons & 1) === 0) { cleanup(); return; }
+          if (Math.hypot(ev.screenX - downX, ev.screenY - downY) >= 4) {
+            dragged = true;
+            lastDragTriggeredAt = Date.now();
+            cleanup();
+            HostWindowBridge.dragMove();
+          }
+        };
+        const onUp = (ev) => {
+          cleanup();
+          if (ev.button === 0 && !dragged && Math.hypot(ev.screenX - downX, ev.screenY - downY) < 4) {
+            if (!(ev.target instanceof Element && ev.target.closest("[data-no-drag]"))) {
+              lastMouseUpHandledAt = Date.now();
+              toggleCapsuleExpandCollapse();
+            }
+          }
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      });
+    }
+
+    pillEl.addEventListener("click", (e) => {
+      if (e.target instanceof Element && e.target.closest("[data-no-drag]")) return;
+      if (isHudMode) {
+        if (Date.now() - lastMouseUpHandledAt < 250 || Date.now() - lastDragTriggeredAt < 400) return;
+      }
+      toggleCapsuleExpandCollapse();
+    });
+  })();
+
+  /* ---------- Telemetry Normalization Layer ---------- */
+  function normSpeed(sp) {
+    const o = sp && typeof sp === "object" ? sp : {};
+    const active = Boolean(o.active);
+    const phase = typeof o.phase === "string" && o.phase ? o.phase : (active ? "generating" : "idle");
+    const avg = num(o.avgTokensPerSec, 0);
+    const peak = num(o.peakTokensPerSec, 0);
+    const disp = num(o.displayTokensPerSec, avg);
+    const live = active && phase !== "waiting_ttft" ? num(o.liveTokensPerSec !== undefined ? o.liveTokensPerSec : disp, disp) : 0;
+    const out = Math.round(num(o.outputTokens, 0));
+    const think = Math.round(num(o.thinkingTokens, 0));
+    const resp = Math.round(num(o.responseTokens, 0));
+    const elapsedGenSec = num(o.elapsedGenSec, 0);
+    const hasHistory = !active && (avg > 0 || disp > 0 || out > 0);
+    const phaseLabel = (typeof o.phaseLabel === "string" && o.phaseLabel.trim()) ||
+      (phase === "waiting_ttft" ? "等待首字" : phase === "thinking" ? "思考中" : active ? "输出中" : (hasHistory ? "已完成" : "空闲"));
+    return {
+      active, phase, phaseLabel,
+      displayTokensPerSec: disp, liveTokensPerSec: live, avgTokensPerSec: avg, peakTokensPerSec: peak,
+      outputTokens: out, thinkingTokens: think, responseTokens: resp,
+      elapsedGenSec,
+      isExact: Boolean(o.isExact), ttftMs: Math.round(num(o.ttftMs, 0)), hasHistory,
+    };
+  }
+
+  function normSubTokenUsage(raw) {
+    const o = raw && typeof raw === "object" ? raw : {};
+    const inputTokens = Math.round(num(o.inputTokens, 0));
+    const cacheReadTokens = Math.round(num(o.cacheReadTokens, 0));
+    const outputTokens = Math.round(num(o.outputTokens, 0));
+    const netTokens = o.netTokens !== undefined ? Math.round(num(o.netTokens, 0)) : (inputTokens + outputTokens);
+    const denom = inputTokens + cacheReadTokens;
+    const hasCacheData = o.hasCacheData !== undefined ? Boolean(o.hasCacheData) : denom > 0;
+    const cacheHitPct = o.cacheHitPct !== undefined
+      ? num(o.cacheHitPct, 0)
+      : (denom > 0 ? Math.round((cacheReadTokens / denom) * 1000) / 10 : 0);
+    const lastTurnCacheTokens = Math.round(num(o.lastTurnCacheTokens, 0));
+    const lastTurnInputTokens = Math.round(num(o.lastTurnInputTokens, 0));
+    const lastTurnDenom = lastTurnInputTokens + lastTurnCacheTokens;
+    const lastTurnTotalTokens = o.lastTurnTotalTokens !== undefined
+      ? Math.round(num(o.lastTurnTotalTokens, 0))
+      : lastTurnDenom;
+    const rawLastPct = optNum(o.lastTurnCacheHitPct);
+    const lastTurnCacheHitPct = rawLastPct !== null
+      ? rawLastPct
+      : (o.lastTurnCacheHitPct === null
+        ? null
+        : (lastTurnDenom > 0 ? Math.round((lastTurnCacheTokens / lastTurnDenom) * 1000) / 10 : null));
+    const cacheMissStreak = Math.round(num(o.cacheMissStreak, 0));
+    return {
+      netTokens, inputTokens, cacheReadTokens, outputTokens, cacheHitPct, hasCacheData,
+      lastTurnCacheHitPct, lastTurnCacheTokens, lastTurnInputTokens, lastTurnTotalTokens, cacheMissStreak,
+    };
+  }
+
+  function normTokenUsage(raw) {
+    const o = raw && typeof raw === "object" ? raw : {};
+    const base = normSubTokenUsage(o);
+    const grossTokens = o.grossTokens !== undefined
+      ? Math.round(num(o.grossTokens, 0))
+      : (base.inputTokens + base.cacheReadTokens + base.outputTokens);
+    return {
+      ...base,
+      grossTokens,
+      thinkingTokens: Math.round(num(o.thinkingTokens, 0)),
+      responseTokens: Math.round(num(o.responseTokens, 0)),
+      subNetTokens: Math.round(num(o.subNetTokens, 0)),
+      subCacheReadTokens: Math.round(num(o.subCacheReadTokens, 0)),
+      subCount: Math.round(num(o.subCount, 0)),
+      turnCount: Math.round(num(o.turnCount, 0)),
+    };
+  }
+
+  function clearTimerPrefix(prefix) {
+    for (const k of Array.from(timerRegistry.keys())) {
+      if (k.startsWith(prefix)) timerRegistry.delete(k);
+    }
+  }
+
+  function normalizeTask(raw, nowSec, pinnedSet) {
+    const d = raw && typeof raw === "object" ? raw : {};
+    const cid = String(d.conversationId || "").trim();
+    const lsId = String(d.lsInstanceId || "local").trim();
+    const taskKey = String(d.taskKey || `${lsId}:${cid}`);
+    const ctx = d.context || d.contextWindowUsage || {};
+    const grp = ctx.groups || {};
+    const used = num(ctx.used, 0);
+    const max = num(ctx.max, 512000) || 512000;
+    const rawPct = ctx.percent !== undefined ? num(ctx.percent, 0) : (max > 0 ? (used / max) * 100 : 0);
+    const pct = (used > max && max > 0) ? Math.max(rawPct, (used / max) * 100) : Math.max(0, rawPct);
+
+    const hb = d.heartbeat || {};
+    const ra = hb.retryAlert;
+    const raObj = ra && typeof ra === "object" ? ra : null;
+    const alertMsg = typeof ra === "string"
+      ? ra.trim()
+      : (raObj && typeof raObj.message === "string" ? raObj.message.trim() : "");
+    const retryAlert = (raObj || alertMsg)
+      ? {
+          attempt: Math.round(num(raObj && raObj.attempt, 0)),
+          consecutiveErrors: Math.round(num(raObj && raObj.consecutiveErrors, 0)),
+          isTimeout: Boolean(raObj && raObj.isTimeout),
+          isInterrupted: Boolean(raObj && raObj.isInterrupted),
+          ageSec: optNum(raObj && raObj.ageSec),
+          message: alertMsg,
+        }
+      : null;
+
+    const rawSubs = Array.isArray(d.activeSubagents) ? d.activeSubagents : [];
+    const subs = rawSubs
+      .filter((s) => s && typeof s === "object" && (s.agentKind !== "swarm_monitor" || s.hasError))
+      .map((s) => {
+        const sState = String(s.state || (s.running ? "running" : "waiting")).toLowerCase();
+        const sErr = Boolean(s.hasError || sState === "error");
+        const sRunning = s.running !== false && sState === "running" && !sErr;
+        const subUsed = num(s.context && s.context.used, 0);
+        const subMax = num(s.context && s.context.max, 512000) || 512000;
+        const subRawPct = s.context && s.context.percent !== undefined ? num(s.context.percent, 0) : (subMax > 0 ? (subUsed / subMax) * 100 : 0);
+        const sRawBg = s.bgScript && typeof s.bgScript === "object" ? s.bgScript : null;
+        const sBgIdx = sRawBg ? optNum(sRawBg.stepIndex) : null;
+        const sBgScript = sRawBg
+          ? {
+              kind: String(sRawBg.kind || "command"),
+              toolName: String(sRawBg.toolName || "").replace(/^CORTEX_STEP_TYPE_/i, ""),
+              stepIndex: sBgIdx !== null ? Math.round(sBgIdx) : null,
+              startedAt: num(sRawBg.startedAt, 0),
+              elapsedSec: num(sRawBg.elapsedSec, 0),
+              logUri: String(sRawBg.logUri || ""),
+              isStalled: Boolean(sRawBg.isStalled),
+            }
+          : null;
+        return {
+          conversationId: String(s.conversationId || ""),
+          agentKind: String(s.agentKind || "subagent"),
+          name: String(s.name || shortCid(s.conversationId) || "子代理"),
+          modelLabel: String(s.modelLabel || "Auto"),
+          state: sErr ? "error" : (sRunning ? "running" : "waiting"),
+          running: sRunning,
+          hasError: sErr,
+          isStalled: Boolean(s.isStalled),
+          runningStepIndex: typeof s.runningStepIndex === "number" ? Math.round(s.runningStepIndex) : -1,
+          currentTool: String(s.currentTool || (sRunning ? "执行中" : "")).replace(/^CORTEX_STEP_TYPE_/i, ""),
+          stepCount: Math.round(num(s.stepCount, 0)),
+          elapsedSec: num(s.elapsedSec, 0),
+          errorReason: String(s.errorReason || ""),
+          bgScript: sBgScript,
+          context: {
+            used: subUsed,
+            max: subMax,
+            percent: (subUsed > subMax && subMax > 0) ? Math.max(subRawPct, (subUsed / subMax) * 100) : Math.max(0, subRawPct),
+          },
+          tokenSpeed: normSpeed(s.tokenSpeed),
+          tokenUsage: normSubTokenUsage(s.tokenUsage),
+        };
+      });
+
+    const rawSwarm = d.swarmSummary && typeof d.swarmSummary === "object" ? d.swarmSummary : {};
+    let calcSubRun = 0, calcSubWait = 0, calcSubErr = 0, subLiveSum = 0;
+    let calcSubWaitingTtft = false, calcSubAnyGenerating = false;
+    for (const s of subs) {
+      if (s.running) calcSubRun++;
+      else if (s.hasError) calcSubErr++;
+      else calcSubWait++;
+      if (s.running && s.tokenSpeed.active && s.tokenSpeed.phase !== "waiting_ttft") {
+        subLiveSum += s.tokenSpeed.displayTokensPerSec;
+        calcSubAnyGenerating = true;
+      }
+      if (s.running && s.tokenSpeed.active && s.tokenSpeed.phase === "waiting_ttft") calcSubWaitingTtft = true;
+    }
+    const calcSubLiveTps = Math.round(subLiveSum * 10) / 10;
+
+    const swarmSummary = {
+      isSwarm: rawSwarm.isSwarm !== undefined
+        ? Boolean(rawSwarm.isSwarm)
+        : Boolean(subs.some((s) => s.agentKind === "swarm_worker") || subs.length >= 3),
+      runningCount: calcSubRun,
+      waitingCount: calcSubWait,
+      errorCount: calcSubErr,
+      totalCount: subs.length,
+      liveTokensPerSec: rawSwarm.liveTokensPerSec !== undefined ? num(rawSwarm.liveTokensPerSec, calcSubLiveTps) : calcSubLiveTps,
+      anyWaitingTtft: rawSwarm.anyWaitingTtft !== undefined ? Boolean(rawSwarm.anyWaitingTtft) : calcSubWaitingTtft,
+      anyGenerating: rawSwarm.anyGenerating !== undefined ? Boolean(rawSwarm.anyGenerating) : calcSubAnyGenerating,
+    };
+
+    const rawBg = hb.bgScript && typeof hb.bgScript === "object" ? hb.bgScript : null;
+    const rawBgStepIdx = rawBg ? optNum(rawBg.stepIndex) : null;
+    const bgScript = rawBg
+      ? {
+          kind: String(rawBg.kind || "command"),
+          toolName: String(rawBg.toolName || "").replace(/^CORTEX_STEP_TYPE_/i, ""),
+          stepIndex: rawBgStepIdx !== null ? Math.round(rawBgStepIdx) : null,
+          startedAt: num(rawBg.startedAt, 0),
+          elapsedSec: num(rawBg.elapsedSec, 0),
+          logUri: String(rawBg.logUri || ""),
+          isStalled: Boolean(rawBg.isStalled),
+        }
+      : null;
+
+    const tokenSpeed = normSpeed(d.tokenSpeed);
+    const hbStateLower = String(hb.state || "idle").toLowerCase();
+    const hasHbAlert = Boolean(alertMsg) ||
+      Boolean(retryAlert && (retryAlert.isTimeout || retryAlert.isInterrupted || retryAlert.attempt > 0 || retryAlert.consecutiveErrors > 0)) ||
+      ["interrupted", "retrying"].includes(hbStateLower) ||
+      hb.stateLabel === "断流待续" || hb.stateLabel === "重试告警" || hb.stateLabel === "超时中断";
+
+    let bucket = String(d.bucket || d.tier || "").toUpperCase();
+    if (!["ALERT", "RUNNING", "RECENT", "IDLE"].includes(bucket)) {
+      if (hasHbAlert || Boolean(hb.isStalled) || swarmSummary.errorCount > 0) bucket = "ALERT";
+      else if (Boolean(hb.isRunning) || hbStateLower === "running_bg_script" || hbStateLower === "waiting_approval" || tokenSpeed.active || swarmSummary.runningCount > 0 || String(d.status || "").toUpperCase() === "RUNNING") bucket = "RUNNING";
+      else if (d.justFinishedAt && (nowSec - num(d.justFinishedAt, 0)) <= 180) bucket = "RECENT";
+      else bucket = "IDLE";
+    }
+    if (bucket === "IDLE" && (hasHbAlert || Boolean(hb.isStalled) || swarmSummary.errorCount > 0)) bucket = "ALERT";
+
+    const justFinishedAt = num(d.justFinishedAt, 0);
+    const rawTopChildren = Array.isArray(ctx.topChildren) ? ctx.topChildren : [];
+    const topChildren = rawTopChildren
+      .filter((c) => c && typeof c === "object" && num(c.tokens, 0) > 0 && String(c.name || "").trim())
+      .slice(0, 6)
+      .map((c) => ({
+        group: String(c.group || "").trim(),
+        name: String(c.name || "").trim(),
+        tokens: Math.round(num(c.tokens, 0)),
+      }));
+    const estimatedAfterCompaction = Boolean(ctx.estimatedAfterCompaction);
+    const routedModelLabel = String(d.routedModelLabel || "").trim();
+    return {
+      taskKey, lsInstanceId: lsId, cid,
+      title: String(d.title || `会话 ${shortCid(cid)}`),
+      workspaceName: String(d.workspaceName || ""),
+      branchName: String(d.branchName || ""),
+      modelLabel: String(d.modelLabel || "Auto").trim() || "Auto",
+      routedModelLabel,
+      bucket,
+      isPinned: Boolean(d.isPinned || pinnedSet.has(cid)),
+      runBatchStartedAt: num(d.runBatchStartedAt, 0),
+      justFinishedAt,
+      finishedAgoSec: justFinishedAt > 0 ? Math.max(0, nowSec - justFinishedAt) : 0,
+      lastModifiedAt: num(d.lastModifiedAt, 0),
+      used, max, pct,
+      groups: { sys: num(grp.systemPrompt, 0), ext: num(grp.extensions, 0), tools: num(grp.tools, 0), chat: num(grp.chatMessages, 0) },
+      compactionCount: Math.max(0, Math.round(num(ctx.compactionCount, 0))),
+      estimatedAfterCompaction,
+      topChildren,
+      anyGenerating: d.anyGenerating !== undefined
+        ? Boolean(d.anyGenerating)
+        : Boolean((tokenSpeed.active && tokenSpeed.phase !== "waiting_ttft") || swarmSummary.anyGenerating),
+      tokenSpeed,
+      tokenUsage: normTokenUsage(d.tokenUsage),
+      hb: {
+        state: String(hb.state || "idle"),
+        stateLabel: String(hb.stateLabel || ""),
+        isRunning: Boolean(hb.isRunning),
+        isStalled: Boolean(hb.isStalled),
+        hasAlert: hasHbAlert,
+        retryAlert,
+        stepIndex: Math.round(num(hb.stepIndex, 0)),
+        runningStepIndex: typeof hb.runningStepIndex === "number" ? hb.runningStepIndex : -1,
+        toolName: String(hb.toolName || "").replace(/^CORTEX_STEP_TYPE_/i, ""),
+        elapsedSec: num(hb.elapsedSec, 0),
+        alertMsg,
+        bgScript,
+      },
+      swarmSummary,
+      subs,
+    };
+  }
+
+  /* ---------- Badge & Drawer Builders ---------- */
+  const SHORT_TOOL_ALIASES = {
+    run_command: "run_cmd",
+    call_mcp_tool: "mcp_tool",
+    fast_io_batch_read: "batch_read",
+    fast_io_grep: "io_grep",
+    fast_io_glob_tree: "io_glob",
+    fast_io_outline: "io_outline",
+    invoke_subagent: "subagent",
+    command_status: "cmd_stat",
+  };
+  function fmtShortToolName(raw) {
+    const s = String(raw || "").trim();
+    if (!s || s === "执行中") return "执行中";
+    const mapped = SHORT_TOOL_ALIASES[s.toLowerCase()] || s;
+    return mapped.length > 10 ? mapped.slice(0, 9) + "…" : mapped;
+  }
+  function isActiveFgRootTool(task) {
+    if (!task || !task.hb || !task.hb.isRunning || task.hb.runningStepIndex < 0) return false;
+    const tn = String(task.hb.toolName || "").trim().toLowerCase();
+    return tn !== "invoke_subagent" && tn !== "swarm_wait";
+  }
+
+  function applySwarmHeaderSpeedBadge(node, liveRate, waitingTtft, anyGenerating = false, runningCount = 0) {
+    node.className = "speed-badge";
+    if (liveRate > 0) {
+      node.classList.add("active");
+      setTextIfChanged(node, `⚡ ${fmtRate(liveRate)} tok/s`);
+    } else if (waitingTtft) {
+      node.classList.add("waiting");
+      setTextIfChanged(node, "⚡ 等待首字");
+    } else if (anyGenerating) {
+      node.classList.add("waiting");
+      setTextIfChanged(node, "⚡ 生成中");
+    } else if (runningCount > 0) {
+      node.classList.add("waiting-sub");
+      setTextIfChanged(node, "⚙ 执行中");
+    } else {
+      node.classList.add("empty");
+      setTextIfChanged(node, "⚡ 0.0 tok/s");
+    }
+  }
+
+  function applyCardRow2Speed(node, task) {
+    const ts = task.tokenSpeed;
+    const hbState = String((task.hb && task.hb.state) || "").toLowerCase();
+    node.className = "speed-badge";
+    if (ts.active) {
+      const rate = ts.displayTokensPerSec;
+      if (rate <= 0) {
+        node.classList.add("waiting");
+        const phaseLbl = ts.phase === "waiting_ttft" ? "等待首字" : (ts.phaseLabel || "生成中");
+        const waitLabel = ts.elapsedGenSec >= 5
+          ? `⚡ ${phaseLbl} ${fmtElapsed(ts.elapsedGenSec)} ▾`
+          : `⚡ ${phaseLbl} ▾`;
+        setTextIfChanged(node, waitLabel);
+      } else {
+        node.classList.add("active");
+        setTextIfChanged(node, `⚡ ${fmtRate(rate)} tok/s ▾`);
+      }
+      return;
+    }
+    if (hbState === "waiting_approval") {
+      node.classList.add("waiting-sub");
+      setTextIfChanged(node, "⏸ 等待审批 ▾");
+      return;
+    }
+    if (isActiveFgRootTool(task)) {
+      node.classList.add("waiting-sub");
+      const shortTool = fmtShortToolName(task.hb.toolName);
+      const elSec = num(task.hb.elapsedSec, 0);
+      setTextIfChanged(node, elSec >= 1 ? `⚙ ${shortTool} ${fmtElapsed(elSec)} ▾` : `⚙ ${shortTool} ▾`);
+      return;
+    }
+    if (task.swarmSummary.runningCount > 0) {
+      node.classList.add("waiting-sub");
+      setTextIfChanged(node, "⏸ 等待子代理 ▾");
+      return;
+    }
+    const bgScript = task.hb && task.hb.bgScript;
+    if (hbState === "running_bg_script" && bgScript) {
+      node.classList.add("waiting-sub");
+      const bgPrefix = bgScript.kind === "workflow" ? "⚙ 工作流" : "⚙ 后台脚本";
+      const bgElapsed = bgScript.startedAt > 0 ? Math.max(0, (Date.now() / 1000) - bgScript.startedAt) : bgScript.elapsedSec;
+      setTextIfChanged(node, bgElapsed >= 1 ? `${bgPrefix} ${fmtElapsed(bgElapsed)} ▾` : `${bgPrefix} ▾`);
+      return;
+    }
+    if (task.hb && task.hb.isRunning) {
+      node.classList.add("waiting-sub");
+      setTextIfChanged(node, "⚙ 执行中 ▾");
+      return;
+    }
+    const histRate = ts.avgTokensPerSec > 0 ? ts.avgTokensPerSec : ts.displayTokensPerSec;
+    if (ts.hasHistory && histRate > 0) {
+      node.classList.add("history");
+      setTextIfChanged(node, `${fmtRate(histRate)} tok/s ▾`);
+    } else {
+      node.classList.add("empty");
+      setTextIfChanged(node, "-- tok/s");
+    }
+  }
+
+  function applySubBeeSpeedBadge(node, sub) {
+    const ts = sub.tokenSpeed;
+    const histRate = ts.avgTokensPerSec > 0 ? ts.avgTokensPerSec : ts.displayTokensPerSec;
+    node.className = "speed-badge";
+    if (sub.running && ts.active) {
+      node.style.display = "inline-flex";
+      const liveRate = ts.displayTokensPerSec;
+      if (liveRate <= 0) {
+        node.classList.add("waiting");
+        const phaseLbl = ts.phase === "waiting_ttft" ? "等待首字" : (ts.phaseLabel || "生成中");
+        const waitLabel = ts.elapsedGenSec >= 5
+          ? `⚡ ${phaseLbl} ${fmtElapsed(ts.elapsedGenSec)}`
+          : `⚡ ${phaseLbl}`;
+        setTextIfChanged(node, waitLabel);
+      } else {
+        node.classList.add("active");
+        setTextIfChanged(node, `⚡ ${fmtRate(liveRate)} tok/s`);
+      }
+      return;
+    }
+    if (histRate > 0) {
+      node.style.display = "inline-flex";
+      node.classList.add("history");
+      setTextIfChanged(node, `${fmtRate(histRate)} tok/s`);
+      return;
+    }
+    if (sub.running) {
+      node.style.display = "inline-flex";
+      node.classList.add("empty");
+      setTextIfChanged(node, "执行中");
+    } else {
+      node.style.display = "none";
+      setTextIfChanged(node, "");
+    }
+  }
+
+  function buildDrawerHtml(mode, t) {
+    if (mode === "ctx") {
+      const over = t.used - t.max;
+      let remHtml = over > 0
+        ? `超限：<strong>+${fmtK(over)}</strong>`
+        : `余量：<strong>${fmtK(Math.max(0, t.max - t.used))}</strong>`;
+      if (t.compactionCount > 0) {
+        remHtml += ` · 已压缩 <strong>${t.compactionCount}</strong> 次`;
+      }
+      if (t.estimatedAfterCompaction) {
+        remHtml += ` <span class="ctx-est-tag">(压缩后预估)</span>`;
+      }
+      const routedHtml = (t.routedModelLabel && t.routedModelLabel !== t.modelLabel)
+        ? `<span class="drawer-warn">（实际路由：${esc(t.routedModelLabel)}）</span>`
+        : "";
+      const topChildrenHtml = (Array.isArray(t.topChildren) && t.topChildren.length > 0)
+        ? `<div class="drawer-line">膨胀主因：${t.topChildren.slice(0, 4).map((c) => {
+            const cname = c.name.length > 18 ? c.name.slice(0, 17) + "…" : c.name;
+            return `${esc(cname)} <strong>${fmtK(c.tokens)}</strong>`;
+          }).join(" · ")}</div>`
+        : "";
+      const extHtml = t.groups.ext > 0
+        ? `<span class="dot-swatch" style="background:var(--fp-ext)"></span>扩展 <strong>${fmtK(t.groups.ext)}</strong> · `
+        : "";
+      const tu = t.tokenUsage;
+      const cumCacheStr = tu.hasCacheData ? `${tu.cacheHitPct.toFixed(1)}%` : "--";
+      let lastTurnCacheHtml = "<strong>--</strong>";
+      if (tu.lastTurnCacheHitPct !== null && tu.lastTurnCacheHitPct !== undefined) {
+        const pctStr = fmtPctCompact(tu.lastTurnCacheHitPct);
+        const showUncached = tu.lastTurnInputTokens > 0 && (tu.lastTurnCacheHitPct < 50 || tu.lastTurnInputTokens >= 40000);
+        const uncachedNote = showUncached ? `（重算 ${fmtTok(tu.lastTurnInputTokens)}）` : "";
+        const isColdTurn = tu.lastTurnCacheHitPct < 10 && tu.lastTurnInputTokens >= 40000;
+        lastTurnCacheHtml = isColdTurn
+          ? `<strong class="drawer-warn">${pctStr}${uncachedNote}</strong>`
+          : `<strong>${pctStr}${uncachedNote}</strong>`;
+        if (tu.cacheMissStreak >= 2) {
+          lastTurnCacheHtml += ` · <span class="drawer-warn">连续未命中 ${tu.cacheMissStreak} 轮</span>`;
+        }
+      }
+      return (
+        `<div class="drawer-head"><span class="drawer-line">模型：<strong>${esc(t.modelLabel)}</strong>${routedHtml}</span><span class="drawer-line">${remHtml}</span></div>` +
+        `<div class="drawer-line">` +
+          `<span class="dot-swatch" style="background:var(--fp-sys)"></span>系统 <strong>${fmtK(t.groups.sys)}</strong> · ` +
+          extHtml +
+          `<span class="dot-swatch" style="background:var(--fp-tool)"></span>工具 <strong>${fmtK(t.groups.tools)}</strong> · ` +
+          `<span class="dot-swatch" style="background:var(--fp-chat)"></span>对话 <strong>${fmtK(t.groups.chat)}</strong>` +
+        `</div>` +
+        topChildrenHtml +
+        `<div class="drawer-line drawer-sep">累计消耗：<strong>${fmtTok(tu.netTokens)}</strong>（输入 <strong>${fmtTok(tu.inputTokens)}</strong> · 输出 <strong>${fmtTok(tu.outputTokens)}</strong>${tu.subNetTokens > 0 ? ` · 含子代理 <strong>${fmtTok(tu.subNetTokens)}</strong>` : ""}）</div>` +
+        `<div class="drawer-line">累计缓存命中：<strong>${cumCacheStr}</strong></div>` +
+        `<div class="drawer-line">上轮缓存命中：${lastTurnCacheHtml}</div>`
+      );
+    }
+    if (mode === "speed") {
+      const ts = t.tokenSpeed;
+      const hbState = String((t.hb && t.hb.state) || "").toLowerCase();
+      const bgScript = t.hb && t.hb.bgScript;
+      const bgPrefix = bgScript ? (bgScript.kind === "workflow" ? "⚙ 工作流" : "⚙ 后台脚本") : "";
+      const bgStartedSec = bgScript
+        ? (bgScript.startedAt > 0 ? Math.max(0, (Date.now() / 1000) - bgScript.startedAt) : bgScript.elapsedSec)
+        : 0;
+      const bgStepIdxStr = bgScript && Number.isFinite(bgScript.stepIndex) ? `步骤 ${bgScript.stepIndex}` : "步骤 --";
+      if (bgScript && hbState === "running_bg_script" && !ts.active && t.swarmSummary.runningCount <= 0) {
+        return (
+          `<div class="drawer-head"><span class="drawer-line">状态：<strong>${bgPrefix}运行中</strong></span><span class="drawer-line">已运行：<strong>${fmtElapsed(bgStartedSec)}</strong></span></div>` +
+          `<div class="drawer-line">工具：<strong>${esc(bgScript.toolName || "--")}</strong>（${bgStepIdxStr}）</div>` +
+          `<div class="drawer-line">主回复已结束，后台进程仍在执行</div>`
+        );
+      }
+      const peak = ts.peakTokensPerSec > 0 ? `${fmtRate(ts.peakTokensPerSec)} tok/s` : "--";
+      const avg = ts.avgTokensPerSec > 0 ? `${fmtRate(ts.avgTokensPerSec)} tok/s` : "--";
+      const ttftOrWait = (ts.active && ts.phase === "waiting_ttft" && ts.elapsedGenSec > 0)
+        ? `已等待：<strong>${fmtElapsed(ts.elapsedGenSec)}</strong>`
+        : `首字：<strong>${fmtTtft(ts.ttftMs)}</strong>`;
+      const phaseText = (!ts.active && hbState === "waiting_approval")
+        ? "等待用户审批"
+        : `${ts.phaseLabel}${ts.isExact ? " (精确)" : ""}`;
+      const fgToolHtml = (!ts.active && t.hb && t.hb.isRunning && t.hb.runningStepIndex >= 0 && t.hb.toolName)
+        ? `<div class="drawer-line drawer-sep">当前工具：<strong>${esc(t.hb.toolName)}</strong>（步骤 ${t.hb.runningStepIndex} · 已运行 <strong>${fmtElapsed(t.hb.elapsedSec)}</strong>）</div>`
+        : "";
+      const showBgConcurrent = Boolean(bgScript && !(t.hb && t.hb.runningStepIndex >= 0 && bgScript.stepIndex === t.hb.runningStepIndex));
+      const bgConcurrentHtml = showBgConcurrent
+        ? `<div class="drawer-line${fgToolHtml ? "" : " drawer-sep"}">${bgPrefix}：<strong>${esc(bgScript.toolName || "--")}</strong>（${bgStepIdxStr} · 已运行 <strong>${fmtElapsed(bgStartedSec)}</strong>${bgScript.isStalled ? ` · <span class="drawer-warn">已挂起</span>` : ""}）</div>`
+        : "";
+      return (
+        `<div class="drawer-head"><span class="drawer-line">阶段：<strong>${esc(phaseText)}</strong></span><span class="drawer-line">${ttftOrWait}</span></div>` +
+        `<div class="drawer-line">输出：<strong>${ts.outputTokens} tok</strong>（思考 ${ts.thinkingTokens} · 回复 ${ts.responseTokens}）</div>` +
+        `<div class="drawer-line">峰值：<strong>${peak}</strong> · 均值：<strong>${avg}</strong></div>` +
+        fgToolHtml +
+        bgConcurrentHtml
+      );
+    }
+    if (mode === "alert") {
+      const parts = [];
+      if (t.hb.hasAlert || t.hb.isStalled) {
+        const ra = t.hb.retryAlert;
+        const stLow = String(t.hb.state || "").toLowerCase();
+        const meta = [];
+        if (stLow === "retrying") {
+          const att = ra ? (ra.attempt > 0 ? ra.attempt : ra.consecutiveErrors) : 0;
+          meta.push(att > 0 ? `重试第 ${att} 次` : "连接重试中");
+        } else if (stLow === "interrupted" && ra && ra.isTimeout) {
+          meta.push("超时中断");
+        }
+        if (ra && ra.consecutiveErrors >= 2) {
+          meta.push(`连续异常 ${ra.consecutiveErrors} 次`);
+        }
+        if (ra && ra.ageSec !== null && ra.ageSec !== undefined) {
+          meta.push(`距今 ${fmtElapsed(ra.ageSec)}`);
+        }
+        if (meta.length > 0) {
+          parts.push(`<div class="drawer-line"><strong>${esc(meta.join(" · "))}</strong></div>`);
+        }
+        const bgStallStepNote = (t.hb.isStalled && t.hb.bgScript && t.hb.bgScript.isStalled && t.hb.bgScript.stepIndex !== null)
+          ? `（步骤 ${t.hb.bgScript.stepIndex}）`
+          : "";
+        const msg = t.hb.alertMsg || (t.hb.isStalled ? (t.hb.toolName ? `${t.hb.toolName} 已超阈值挂起${bgStallStepNote}` : `响应超阈值挂起${bgStallStepNote}`) : (meta.length > 0 ? "" : "运行异常待处理"));
+        if (msg) {
+          parts.push(`<div class="drawer-err">${esc(msg)}</div>`);
+        }
+      }
+      return parts.join("");
+    }
+    return "";
+  }
+
+  /* ---------- Keyed Task Card Creation & Fine-Grained DOM Patch ---------- */
+  function createCardRecord(taskKey) {
+    const root = el("taskCardTpl").content.firstElementChild.cloneNode(true);
+    const q = (role) => root.querySelector(`[data-role="${role}"]`);
+    const refs = {
+      root,
+      titleWrap: q("titleWrap"),
+      wsBadge: q("wsBadge"),
+      title: q("title"),
+      modelBadge: q("modelBadge"),
+      branchBadge: q("branchBadge"),
+      usageChip: q("usageChip"),
+      pinBtn: q("pinBtn"),
+      hideRecentBtn: q("hideRecentBtn"),
+      ctxReadout: q("ctxReadout"),
+      ctxPct: q("ctxPct"),
+      ctxTok: q("ctxTok"),
+      speedBadge: q("speedBadge"),
+      barHit: q("barHit"),
+      barTrack: q("barTrack"),
+      segSys: q("segSys"),
+      segExt: q("segExt"),
+      segTools: q("segTools"),
+      segChat: q("segChat"),
+      drawerWrap: q("drawerWrap"),
+      drawerBox: q("drawerBox"),
+      stepRow: q("stepRow"),
+      stepWarnIcon: q("stepWarnIcon"),
+      stepDot: q("stepDot"),
+      stepLabel: q("stepLabel"),
+      stepTimerWrap: q("stepTimerWrap"),
+      stepElapsed: q("stepElapsed"),
+      wakeBtn: q("wakeBtn"),
+      cancelBtn: q("cancelBtn"),
+      subSection: q("subSection"),
+      swarmBar: q("swarmBar"),
+      swarmLeft: q("swarmLeft"),
+      swarmSpeed: q("swarmSpeed"),
+      swarmChevron: q("swarmChevron"),
+      subList: q("subList"),
+    };
+
+    const rec = {
+      taskKey,
+      refs,
+      task: null,
+      drawerMode: "",
+      swarmExpanded: true,
+      swarmUserToggled: false,
+      openSubIds: new Set(),
+      subNodes: new Map(),
+    };
+
+    const toggleDrawer = (mode) => {
+      rec.drawerMode = rec.drawerMode === mode ? "" : mode;
+      renderCardDrawer(rec);
+      scheduleHudResize();
+      setTimeout(() => scheduleHudResize(), 170);
+      if (rec.drawerMode) {
+        setTimeout(() => {
+          const sc = el("stackScroll");
+          if (refs.drawerWrap.isConnected && sc && sc.scrollHeight > sc.clientHeight + 2) {
+            refs.drawerWrap.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }
+        }, 90);
+      }
+    };
+
+    refs.drawerWrap.addEventListener("transitionend", () => {
+      scheduleHudResize();
+    });
+
+    refs.titleWrap.addEventListener("click", () => {
+      if (!isHudMode && rec.task && rec.task.cid && window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "toggle-conversation", payload: { conversationId: rec.task.cid } }, "*");
+      }
+    });
+    refs.pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (rec.task) togglePinConversation(rec.task.cid);
+    });
+    refs.hideRecentBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (rec.task) {
+        if (archivedRecentKeys.size > 128) archivedRecentKeys.delete(archivedRecentKeys.values().next().value);
+        archivedRecentKeys.add(`${rec.task.taskKey}:${rec.task.justFinishedAt}`);
+        if (lastFullPayload) renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+        apiFetch("/api/hud", {
+          method: "POST",
+          body: JSON.stringify({ action: "dismiss_recent", conversationId: rec.task.cid }),
+        }).catch(() => {});
+      }
+    });
+
+    refs.barHit.addEventListener("click", () => toggleDrawer("ctx"));
+    refs.usageChip.addEventListener("click", () => toggleDrawer("ctx"));
+    refs.speedBadge.addEventListener("click", () => toggleDrawer("speed"));
+
+    refs.stepRow.addEventListener("click", (e) => {
+      if (e.target instanceof Element && e.target.closest("button")) return;
+      if (rec.task && (rec.task.hb.hasAlert || rec.task.hb.isStalled)) toggleDrawer("alert");
+    });
+
+    const bindRescue = (btn, buildPayload) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!rec.task || btn.disabled) return;
+        const origLabel = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "处理中…";
+        const extra = buildPayload(rec.task);
+        const payload = { lsInstanceId: rec.task.lsInstanceId, conversationId: rec.task.cid, ...extra };
+        try {
+          await apiFetch("/api/heal", { method: "POST", body: JSON.stringify(payload) });
+          if (payload.mode === "wake") fastPollBoostUntil = Date.now() + 2600;
+          pollNow(true);
+        } catch (_) {
+        } finally {
+          setTimeout(() => {
+            btn.disabled = false;
+            if (btn === refs.cancelBtn && rec.task) {
+              const curHb = rec.task.hb;
+              const curBgStall = Boolean(!curHb.hasAlert && curHb.isStalled && curHb.runningStepIndex < 0 && curHb.bgScript && curHb.bgScript.isStalled);
+              btn.textContent = curBgStall ? "终止后台" : "⏹ 中断步骤";
+            } else {
+              btn.textContent = origLabel;
+            }
+          }, 550);
+        }
+      });
+    };
+
+    bindRescue(refs.wakeBtn, () => ({ mode: "wake" }));
+    bindRescue(refs.cancelBtn, (t) => {
+      if (t.hb.runningStepIndex >= 0) {
+        return { mode: "cancel_step", stepIndex: t.hb.runningStepIndex };
+      }
+      if (t.hb.isStalled && t.hb.bgScript && t.hb.bgScript.isStalled) {
+        if (t.hb.bgScript.stepIndex !== null && t.hb.bgScript.stepIndex >= 0) {
+          return { mode: "cancel_step", stepIndex: t.hb.bgScript.stepIndex, killBackgroundTasks: true };
+        }
+        return { mode: "cancel_invocation", killBackgroundTasks: true };
+      }
+      return { mode: "cancel_invocation" };
+    });
+
+    refs.swarmBar.addEventListener("click", () => {
+      rec.swarmUserToggled = true;
+      rec.swarmExpanded = !rec.swarmExpanded;
+      if (rec.task) renderCardSubagents(rec);
+      syncTickTimer();
+      scheduleHudResize();
+      if (rec.swarmExpanded) {
+        setTimeout(() => {
+          const sc = el("stackScroll");
+          if (refs.subSection.isConnected && sc && sc.scrollHeight > sc.clientHeight + 2) {
+            refs.subSection.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }
+        }, 90);
+      }
+    });
+
+    return rec;
+  }
+
+  function renderCardRow2Text(rec) {
+    const t = rec.task;
+    if (!t) return;
+    const { ctxReadout, ctxPct, ctxTok, speedBadge } = rec.refs;
+    const hbState = String((t.hb && t.hb.state) || "").toLowerCase();
+
+    ctxPct.style.display = "inline";
+    ctxTok.style.display = "inline";
+    ctxReadout.className = "ctx-readout" + (t.pct >= 90 ? " crit" : t.pct >= 75 ? " warn" : "");
+    setTextIfChanged(ctxPct, `${t.pct.toFixed(1)}%`);
+    setTextIfChanged(ctxTok, `${fmtK(t.used)} / ${fmtK(t.max)}`);
+    applyCardRow2Speed(speedBadge, t);
+    const speedTimerKey = `speed:${rec.taskKey}`;
+    if (t.tokenSpeed.active && t.tokenSpeed.displayTokensPerSec <= 0) {
+      const phaseLbl = t.tokenSpeed.phase === "waiting_ttft" ? "等待首字" : (t.tokenSpeed.phaseLabel || "生成中");
+      timerRegistry.set(speedTimerKey, {
+        el: speedBadge,
+        baseSec: t.tokenSpeed.elapsedGenSec,
+        syncedAtMs: performance.now(),
+        format: (sec) => (sec >= 5 ? `⚡ ${phaseLbl} ${fmtElapsed(sec)} ▾` : `⚡ ${phaseLbl} ▾`),
+      });
+    } else if (!t.tokenSpeed.active && hbState === "waiting_approval") {
+      timerRegistry.delete(speedTimerKey);
+    } else if (!t.tokenSpeed.active && isActiveFgRootTool(t)) {
+      const shortTool = fmtShortToolName(t.hb.toolName);
+      timerRegistry.set(speedTimerKey, {
+        el: speedBadge,
+        baseSec: num(t.hb.elapsedSec, 0),
+        syncedAtMs: performance.now(),
+        format: (sec) => (sec >= 1 ? `⚙ ${shortTool} ${fmtElapsed(sec)} ▾` : `⚙ ${shortTool} ▾`),
+      });
+    } else if (!t.tokenSpeed.active && t.swarmSummary.runningCount > 0) {
+      timerRegistry.delete(speedTimerKey);
+    } else if (!t.tokenSpeed.active && t.swarmSummary.runningCount <= 0 && hbState === "running_bg_script" && t.hb && t.hb.bgScript) {
+      const bg = t.hb.bgScript;
+      const bgBaseSec = bg.startedAt > 0 ? Math.max(0, (Date.now() / 1000) - bg.startedAt) : bg.elapsedSec;
+      const bgPrefix = bg.kind === "workflow" ? "⚙ 工作流" : "⚙ 后台脚本";
+      timerRegistry.set(speedTimerKey, {
+        el: speedBadge,
+        baseSec: bgBaseSec,
+        syncedAtMs: performance.now(),
+        format: (sec) => (sec >= 1 ? `${bgPrefix} ${fmtElapsed(sec)} ▾` : `${bgPrefix} ▾`),
+      });
+    } else {
+      timerRegistry.delete(speedTimerKey);
+    }
+  }
+
+  function renderCardDrawer(rec) {
+    const t = rec.task;
+    const { drawerWrap, drawerBox, barHit } = rec.refs;
+    const isCtxOpen = Boolean(t && rec.drawerMode === "ctx");
+    if (!t || !rec.drawerMode) {
+      drawerWrap.classList.remove("open");
+      barHit.classList.remove("open");
+      return;
+    }
+    if (rec.drawerMode === "alert" && !t.hb.hasAlert && !t.hb.isStalled) {
+      rec.drawerMode = "";
+      drawerWrap.classList.remove("open");
+      barHit.classList.remove("open");
+      return;
+    }
+    const html = buildDrawerHtml(rec.drawerMode, t);
+    if (!html) {
+      drawerWrap.classList.remove("open");
+      barHit.classList.remove("open");
+      return;
+    }
+    if (drawerBox.dataset.lastHtml !== html) {
+      drawerBox.innerHTML = html;
+      drawerBox.dataset.lastHtml = html;
+    }
+    barHit.classList.toggle("open", isCtxOpen);
+    drawerWrap.classList.add("open");
+  }
+
+  function createSubRowNode(rec, subCid) {
+    const wrap = document.createElement("div");
+    wrap.className = "sub-item";
+    wrap.dataset.subCid = subCid;
+    wrap.innerHTML =
+      `<div class="sub-row">` +
+        `<div class="sub-left"><span class="sub-dot"></span><span class="sub-name"></span><span class="sub-stage"><span class="sub-stage-lbl"></span><span class="sub-timer-wrap" style="display:none"> · <span class="sub-timer mono-num">0.0s</span></span></span></div>` +
+        `<div class="sub-meter"><div class="sub-meter-fill" style="width:0%"></div></div>` +
+        `<button class="sub-wake-btn" type="button">⚡ 唤醒</button>` +
+        `<span class="speed-badge empty"></span>` +
+      `</div>` +
+      `<div class="sub-detail selectable"></div>`;
+
+    const rowEl = wrap.querySelector(".sub-row");
+    const dotEl = wrap.querySelector(".sub-dot");
+    const nameEl = wrap.querySelector(".sub-name");
+    const stageEl = wrap.querySelector(".sub-stage");
+    const stageLblEl = wrap.querySelector(".sub-stage-lbl");
+    const timerWrapEl = wrap.querySelector(".sub-timer-wrap");
+    const timerEl = wrap.querySelector(".sub-timer");
+    const meterWrapEl = wrap.querySelector(".sub-meter");
+    const meterFillEl = wrap.querySelector(".sub-meter-fill");
+    const wakeEl = wrap.querySelector(".sub-wake-btn");
+    const spdEl = wrap.querySelector(".speed-badge");
+    const detEl = wrap.querySelector(".sub-detail");
+
+    const node = { wrap, rowEl, dotEl, nameEl, stageEl, stageLblEl, timerWrapEl, timerEl, meterWrapEl, meterFillEl, wakeEl, spdEl, detEl, sub: null };
+
+    rowEl.addEventListener("click", (e) => {
+      if (e.target instanceof Element && e.target.closest("button")) return;
+      if (rec.openSubIds.has(subCid)) rec.openSubIds.delete(subCid);
+      else rec.openSubIds.add(subCid);
+      const isOpen = rec.openSubIds.has(subCid);
+      if (isOpen && node.sub) {
+        const detHtml = buildSubDetailHtml(node.sub);
+        if (detEl.dataset.lastHtml !== detHtml) {
+          detEl.innerHTML = detHtml;
+          detEl.dataset.lastHtml = detHtml;
+        }
+      }
+      detEl.classList.toggle("open", isOpen);
+      scheduleHudResize();
+      if (isOpen) {
+        setTimeout(() => {
+          const sc = el("stackScroll");
+          if (detEl.isConnected && sc && sc.scrollHeight > sc.clientHeight + 2) {
+            detEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }
+        }, 90);
+      }
+    });
+
+    wakeEl.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!rec.task || wakeEl.disabled) return;
+      wakeEl.disabled = true;
+      const isFgStall = Boolean(node.sub && node.sub.isStalled && node.sub.runningStepIndex >= 0);
+      const isSubBgStall = Boolean(node.sub && node.sub.isStalled && node.sub.runningStepIndex < 0 && node.sub.bgScript && node.sub.bgScript.isStalled);
+      let body;
+      if (isFgStall) {
+        body = { lsInstanceId: rec.task.lsInstanceId, conversationId: subCid, mode: "cancel_step", stepIndex: node.sub.runningStepIndex };
+      } else if (isSubBgStall) {
+        const bgIdx = node.sub.bgScript.stepIndex;
+        body = (bgIdx !== null && bgIdx >= 0)
+          ? { lsInstanceId: rec.task.lsInstanceId, conversationId: subCid, mode: "cancel_step", stepIndex: bgIdx, killBackgroundTasks: true }
+          : { lsInstanceId: rec.task.lsInstanceId, conversationId: subCid, mode: "cancel_invocation", killBackgroundTasks: true };
+      } else {
+        body = { lsInstanceId: rec.task.lsInstanceId, conversationId: subCid, mode: "wake" };
+      }
+      try {
+        await apiFetch("/api/heal", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        fastPollBoostUntil = Date.now() + 2400;
+        pollNow(true);
+      } catch (_) {
+      } finally {
+        setTimeout(() => { wakeEl.disabled = false; }, 600);
+      }
+    });
+
+    return node;
+  }
+
+  function buildSubDetailHtml(sub) {
+    const ts = sub.tokenSpeed;
+    const stu = sub.tokenUsage;
+    const pkStr = ts.peakTokensPerSec > 0 ? fmtRate(ts.peakTokensPerSec) : "--";
+    const avgStr = ts.avgTokensPerSec > 0 ? fmtRate(ts.avgTokensPerSec) : "--";
+    let lastCachePart = "";
+    if (stu.lastTurnCacheHitPct !== null && stu.lastTurnCacheHitPct !== undefined) {
+      const pctStr = fmtPctCompact(stu.lastTurnCacheHitPct);
+      const showUncached = stu.lastTurnInputTokens > 0 && (stu.lastTurnCacheHitPct < 50 || stu.lastTurnInputTokens >= 40000);
+      const uncachedNote = showUncached ? `（重算 ${fmtTok(stu.lastTurnInputTokens)}）` : "";
+      const isCold = stu.lastTurnCacheHitPct < 10 && stu.lastTurnInputTokens >= 40000;
+      lastCachePart = ` · 上轮缓存 ${isCold ? `<strong class="drawer-warn">${pctStr}${uncachedNote}</strong>` : `<strong>${pctStr}${uncachedNote}</strong>`}`;
+      if (stu.cacheMissStreak >= 2) {
+        lastCachePart += ` <span class="drawer-warn">（连续未命中 ${stu.cacheMissStreak} 轮）</span>`;
+      }
+    }
+    const subBgHtml = sub.bgScript
+      ? `<div>后台进程: <strong>${esc(sub.bgScript.toolName || "run_command")}</strong>（步骤 ${sub.bgScript.stepIndex !== null ? sub.bgScript.stepIndex : "--"}${sub.bgScript.isStalled ? ` · <span class="drawer-warn">已挂起</span>` : ""}）</div>`
+      : "";
+    return (
+      `模型: <strong>${esc(sub.modelLabel)}</strong> · 上下文: <strong>${sub.context.percent.toFixed(1)}%</strong> (${fmtK(sub.context.used)}/${fmtK(sub.context.max)})` +
+      `<div>测速: 峰值 <strong>${pkStr}</strong> / 均值 <strong>${avgStr} tok/s</strong> · 首字 <strong>${fmtTtft(ts.ttftMs)}</strong></div>` +
+      `<div>累计消耗: <strong>${fmtTok(stu.netTokens)}</strong>（输入 ${fmtTok(stu.inputTokens)} · 输出 ${fmtTok(stu.outputTokens)}） · 缓存: <strong>${stu.hasCacheData ? stu.cacheHitPct.toFixed(1) + "%" : "--"}</strong>${lastCachePart}</div>` +
+      subBgHtml +
+      (sub.errorReason ? `<div class="drawer-err">异常: ${esc(sub.errorReason)}</div>` : "")
+    );
+  }
+
+  function renderCardSubagents(rec) {
+    const t = rec.task;
+    const { subSection, swarmBar, swarmLeft, swarmSpeed, swarmChevron, subList } = rec.refs;
+    const subs = t ? t.subs : [];
+
+    clearTimerPrefix(`sub:${rec.taskKey}:`);
+
+    if (subs.length === 0) {
+      subSection.classList.remove("visible");
+      return;
+    }
+    subSection.classList.add("visible");
+
+    const ss = t.swarmSummary;
+    if (!rec.swarmUserToggled && (t.bucket === "RUNNING" || t.bucket === "ALERT" || ss.runningCount > 0)) {
+      rec.swarmExpanded = true;
+    }
+
+    swarmBar.classList.add("visible");
+    const swarmTitlePrefix = ss.isSwarm ? "🐝 蜂群合计" : "🤖 子代理";
+    let headLabel = `${swarmTitlePrefix} · ${ss.runningCount}/${subs.length} 运行`;
+    if (ss.errorCount > 0) headLabel += ` · ⚠️${ss.errorCount} 异常`;
+    if (t.tokenUsage.subNetTokens > 0) headLabel += ` · ${fmtTok(t.tokenUsage.subNetTokens)}`;
+    setTextIfChanged(swarmLeft, headLabel);
+    applySwarmHeaderSpeedBadge(swarmSpeed, ss.liveTokensPerSec, ss.anyWaitingTtft, ss.anyGenerating, ss.runningCount);
+    setTextIfChanged(swarmChevron, rec.swarmExpanded ? "▴" : "▾");
+
+    const visibleSubs = rec.swarmExpanded ? subs : subs.filter((s) => s.hasError);
+    if (visibleSubs.length === 0) {
+      subList.style.display = "none";
+      return;
+    }
+    subList.style.display = "flex";
+
+    let maxBeeRate = 20;
+    for (const s of visibleSubs) {
+      const r = s.tokenSpeed.active ? s.tokenSpeed.displayTokensPerSec : s.tokenSpeed.avgTokensPerSec;
+      if (r > maxBeeRate) maxBeeRate = r;
+    }
+
+    const nowPerf = performance.now();
+    const activeIds = new Set();
+
+    visibleSubs.forEach((sub, idx) => {
+      const scid = sub.conversationId || `idx_${idx}`;
+      activeIds.add(scid);
+      let sNode = rec.subNodes.get(scid);
+      if (!sNode) {
+        sNode = createSubRowNode(rec, scid);
+        rec.subNodes.set(scid, sNode);
+      }
+      sNode.sub = sub;
+
+      const ts = sub.tokenSpeed;
+      const isStreaming = sub.running && ts.active;
+
+      sNode.rowEl.classList.toggle("has-error", sub.hasError);
+      sNode.rowEl.classList.toggle("is-streaming", isStreaming);
+      sNode.rowEl.classList.toggle("is-running", sub.running && !isStreaming);
+
+      sNode.dotEl.className = "sub-dot " + (sub.hasError ? "error" : (isStreaming ? "streaming" : (sub.running ? "running" : "waiting")));
+      setTextIfChanged(sNode.nameEl, sub.name);
+      sNode.nameEl.title = `${sub.name} (${sub.modelLabel})`;
+
+      if (sub.hasError) {
+        const reason = sub.errorReason || sub.currentTool || "异常中断";
+        sNode.stageLblEl.style.display = "inline";
+        setTextIfChanged(sNode.stageLblEl, `· ${reason}`);
+        const subWakeLabel = (sub.isStalled && sub.runningStepIndex >= 0)
+          ? "⏹ 中断"
+          : ((sub.isStalled && sub.runningStepIndex < 0 && sub.bgScript && sub.bgScript.isStalled) ? "终止后台" : "⚡ 唤醒");
+        setTextIfChanged(sNode.wakeEl, subWakeLabel);
+        if (sub.isStalled && sub.elapsedSec > 0) {
+          sNode.timerWrapEl.style.display = "inline";
+          setTextIfChanged(sNode.timerEl, fmtDuration(sub.elapsedSec));
+          timerRegistry.set(`sub:${rec.taskKey}:${scid}`, {
+            el: sNode.timerEl,
+            baseSec: sub.elapsedSec,
+            syncedAtMs: nowPerf,
+          });
+        } else {
+          sNode.timerWrapEl.style.display = "none";
+        }
+        sNode.meterWrapEl.style.display = "none";
+        sNode.spdEl.style.display = "none";
+      } else {
+        sNode.meterWrapEl.style.display = "block";
+        if (isStreaming) {
+          const effRate = ts.displayTokensPerSec;
+          const barPct = effRate > 0 ? clamp((effRate / maxBeeRate) * 100, 10, 100) : 16;
+          sNode.meterFillEl.style.width = `${barPct.toFixed(0)}%`;
+          sNode.meterWrapEl.classList.remove("ctx-warn", "ctx-crit");
+          const tip = effRate > 0 ? `实时速率 ${fmtRate(effRate)} tok/s` : (ts.phaseLabel || "等待首字");
+          if (sNode.meterWrapEl.title !== tip) sNode.meterWrapEl.title = tip;
+        } else {
+          const ctxPct = clamp(num(sub.context && sub.context.percent, 0), 0, 100);
+          const barPct = ctxPct > 0 ? clamp(ctxPct, 6, 100) : 0;
+          sNode.meterFillEl.style.width = `${barPct.toFixed(0)}%`;
+          sNode.meterWrapEl.classList.toggle("ctx-crit", ctxPct >= 90);
+          sNode.meterWrapEl.classList.toggle("ctx-warn", ctxPct >= 75 && ctxPct < 90);
+          const tip = `上下文占用 ${ctxPct.toFixed(1)}% (${fmtK(sub.context.used)}/${fmtK(sub.context.max)})`;
+          if (sNode.meterWrapEl.title !== tip) sNode.meterWrapEl.title = tip;
+        }
+
+        if (sub.running) {
+          const stageWord = isStreaming ? ts.phaseLabel : (sub.currentTool || "执行中");
+          sNode.stageLblEl.style.display = "inline";
+          setTextIfChanged(sNode.stageLblEl, `· ${stageWord}`);
+          sNode.timerWrapEl.style.display = "inline";
+          setTextIfChanged(sNode.timerEl, fmtDuration(sub.elapsedSec));
+          timerRegistry.set(`sub:${rec.taskKey}:${scid}`, {
+            el: sNode.timerEl,
+            baseSec: sub.elapsedSec,
+            syncedAtMs: nowPerf,
+          });
+        } else {
+          sNode.stageLblEl.style.display = "none";
+          setTextIfChanged(sNode.stageLblEl, "");
+          sNode.timerWrapEl.style.display = "none";
+        }
+
+        applySubBeeSpeedBadge(sNode.spdEl, sub);
+        if (sub.running && ts.active && ts.displayTokensPerSec <= 0) {
+          const phaseLbl = ts.phase === "waiting_ttft" ? "等待首字" : (ts.phaseLabel || "生成中");
+          timerRegistry.set(`sub:${rec.taskKey}:spd:${scid}`, {
+            el: sNode.spdEl,
+            baseSec: ts.elapsedGenSec,
+            syncedAtMs: nowPerf,
+            format: (sec) => (sec >= 5 ? `⚡ ${phaseLbl} ${fmtElapsed(sec)}` : `⚡ ${phaseLbl}`),
+          });
+        }
+      }
+
+      if (rec.openSubIds.has(scid)) {
+        const detHtml = buildSubDetailHtml(sub);
+        if (sNode.detEl.dataset.lastHtml !== detHtml) {
+          sNode.detEl.innerHTML = detHtml;
+          sNode.detEl.dataset.lastHtml = detHtml;
+        }
+        sNode.detEl.classList.add("open");
+      } else {
+        sNode.detEl.classList.remove("open");
+      }
+
+      const curChild = subList.children[idx];
+      if (curChild !== sNode.wrap) {
+        subList.insertBefore(sNode.wrap, curChild || null);
+      }
+    });
+
+    for (const [scid, sNode] of Array.from(rec.subNodes.entries())) {
+      if (!activeIds.has(scid)) {
+        if (sNode.wrap.parentNode === subList) subList.removeChild(sNode.wrap);
+        if (!subs.some((s) => s.conversationId === scid)) {
+          rec.subNodes.delete(scid);
+          rec.openSubIds.delete(scid);
+        }
+      }
+    }
+  }
+
+  function patchCardRecord(rec, t) {
+    rec.task = t;
+    const { refs } = rec;
+
+    refs.root.className = `task-card bucket-${t.bucket}` + (!isHudMode && hostConversationId && t.cid === hostConversationId ? " host-focused" : "");
+
+    if (t.workspaceName) {
+      refs.wsBadge.style.display = "inline-block";
+      setTextIfChanged(refs.wsBadge, t.workspaceName);
+    } else {
+      refs.wsBadge.style.display = "none";
+    }
+    setTextIfChanged(refs.title, t.title);
+    const fullTitle = `${t.workspaceName ? "[" + t.workspaceName + "] " : ""}${t.title} · ${t.modelLabel}${t.branchName ? " (" + t.branchName + ")" : ""} · ${shortCid(t.cid)}`;
+    if (refs.titleWrap.title !== fullTitle) refs.titleWrap.title = fullTitle;
+
+    setTextIfChanged(refs.modelBadge, t.modelLabel);
+    const modelTitle = `模型: ${t.modelLabel} · ${shortCid(t.cid)}`;
+    if (refs.modelBadge.title !== modelTitle) refs.modelBadge.title = modelTitle;
+    if (t.branchName) {
+      refs.branchBadge.style.display = "inline-block";
+      setTextIfChanged(refs.branchBadge, `⎇ ${t.branchName}`);
+    } else {
+      refs.branchBadge.style.display = "none";
+    }
+    const tu = t.tokenUsage;
+    const isCacheCliff = Boolean(
+      tu.cacheMissStreak >= 2 ||
+      (tu.lastTurnCacheHitPct !== null && tu.lastTurnCacheHitPct !== undefined && tu.lastTurnCacheHitPct < 10 && tu.lastTurnInputTokens >= 40000)
+    );
+    const cacheStr = tu.hasCacheData ? `${Math.round(tu.cacheHitPct)}%` : "--";
+    setTextIfChanged(refs.usageChip, `${fmtTok(tu.netTokens)} · 缓存 ${cacheStr}${isCacheCliff ? " ↓" : ""}`);
+    refs.usageChip.classList.toggle("is-cache-cliff", isCacheCliff);
+    refs.usageChip.classList.toggle("has-cache", Boolean(tu.hasCacheData) && !isCacheCliff);
+    const usageTip = isCacheCliff
+      ? (tu.cacheMissStreak >= 2 ? `缓存连续未命中 ${tu.cacheMissStreak} 轮，点击查看上下文详情` : "上轮大输入缓存未命中，点击查看上下文详情")
+      : "点击查看上下文与缓存详情";
+    if (refs.usageChip.title !== usageTip) refs.usageChip.title = usageTip;
+
+    refs.pinBtn.classList.toggle("pinned", t.isPinned);
+    setTextIfChanged(refs.pinBtn, t.isPinned ? "★" : "☆");
+    refs.hideRecentBtn.style.display = (t.bucket === "RECENT" && !t.isPinned) ? "inline-flex" : "none";
+
+    renderCardRow2Text(rec);
+
+    refs.barTrack.className = "bar-track" + (t.pct >= 90 ? " crit" : t.pct >= 75 ? " warn" : "");
+    let { sys, ext, tools, chat } = t.groups;
+    if (sys + ext + tools + chat <= 0 && t.used > 0) chat = t.used;
+    const denom = Math.max(t.max, sys + ext + tools + chat, 1);
+    refs.segSys.style.width = `${Math.min(100, (sys / denom) * 100).toFixed(2)}%`;
+    if (ext > 0) {
+      refs.segExt.style.display = "";
+      refs.segExt.style.width = `${Math.min(100, (ext / denom) * 100).toFixed(2)}%`;
+    } else {
+      refs.segExt.style.display = "none";
+      refs.segExt.style.width = "0%";
+    }
+    refs.segTools.style.width = `${Math.min(100, (tools / denom) * 100).toFixed(2)}%`;
+    refs.segChat.style.width = `${Math.min(100, (chat / denom) * 100).toFixed(2)}%`;
+
+    const hb = t.hb;
+    const hbStateLower = String(hb.state || "").toLowerCase();
+    const isBgStall = Boolean(!hb.hasAlert && hb.isStalled && hb.runningStepIndex < 0 && hb.bgScript && hb.bgScript.isStalled);
+    refs.wakeBtn.style.display = isBgStall ? "inline-flex" : "";
+    if (!refs.cancelBtn.disabled) {
+      setTextIfChanged(refs.cancelBtn, isBgStall ? "终止后台" : "⏹ 中断步骤");
+    }
+    const mainTimerKey = `main:${rec.taskKey}`;
+    if (hb.hasAlert) {
+      refs.stepRow.className = "step-row state-alert";
+      refs.stepRow.style.display = "flex";
+      refs.stepWarnIcon.style.display = "inline";
+      refs.stepDot.style.display = "none";
+      const ra = hb.retryAlert;
+      if (hbStateLower === "retrying") {
+        const attempt = ra ? (ra.attempt > 0 ? ra.attempt : ra.consecutiveErrors) : 0;
+        setTextIfChanged(refs.stepLabel, attempt > 0 ? `重试第 ${attempt} 次` : (hb.stateLabel || "连接重试中"));
+        if (ra && ra.ageSec !== null && ra.ageSec !== undefined) {
+          refs.stepTimerWrap.style.display = "inline";
+          setTextIfChanged(refs.stepElapsed, fmtElapsed(ra.ageSec));
+          timerRegistry.set(mainTimerKey, {
+            el: refs.stepElapsed,
+            baseSec: ra.ageSec,
+            syncedAtMs: performance.now(),
+            format: fmtElapsed,
+          });
+        } else {
+          refs.stepTimerWrap.style.display = "none";
+          timerRegistry.delete(mainTimerKey);
+        }
+      } else if (hbStateLower === "interrupted" && ra && ra.isTimeout) {
+        setTextIfChanged(refs.stepLabel, "超时中断");
+        refs.stepTimerWrap.style.display = "none";
+        timerRegistry.delete(mainTimerKey);
+      } else {
+        setTextIfChanged(refs.stepLabel, hb.stateLabel || hb.alertMsg || "连接中断");
+        refs.stepTimerWrap.style.display = "none";
+        timerRegistry.delete(mainTimerKey);
+      }
+    } else if (hb.isStalled) {
+      refs.stepRow.className = "step-row state-stalled";
+      refs.stepRow.style.display = "flex";
+      refs.stepWarnIcon.style.display = "none";
+      refs.stepDot.style.display = "inline-block";
+      setTextIfChanged(refs.stepLabel, hb.toolName ? `${hb.toolName} 超时挂起` : "响应超时挂起");
+      if (hb.elapsedSec > 0 || hb.runningStepIndex >= 0 || isBgStall) {
+        refs.stepTimerWrap.style.display = "inline";
+        setTextIfChanged(refs.stepElapsed, fmtDuration(hb.elapsedSec));
+        timerRegistry.set(mainTimerKey, { el: refs.stepElapsed, baseSec: hb.elapsedSec, syncedAtMs: performance.now() });
+      } else {
+        refs.stepTimerWrap.style.display = "none";
+        timerRegistry.delete(mainTimerKey);
+      }
+    } else {
+      refs.stepRow.className = "step-row";
+      refs.stepRow.style.display = "none";
+      refs.stepWarnIcon.style.display = "none";
+      refs.stepTimerWrap.style.display = "none";
+      timerRegistry.delete(mainTimerKey);
+    }
+
+    renderCardDrawer(rec);
+    renderCardSubagents(rec);
+  }
+
+  /* ---------- Synchronous 0ms Idle List Renderer ---------- */
+  function renderIdleListDom(hasActive, showIdleStandalone = false) {
+    const idleFooter = el("idleFooter");
+    const idleToggleBtn = el("idleToggleBtn");
+    const idleList = el("idleList");
+    if ((!hasActive && !showIdleStandalone) || lastIdleCandidates.length === 0) {
+      idleFooter.classList.remove("visible", "no-active");
+      idleList.classList.remove("open");
+      if (idleList.dataset.sig) {
+        idleList.dataset.sig = "";
+        idleList.innerHTML = "";
+      }
+      return;
+    }
+
+    idleFooter.classList.add("visible");
+    const noActive = !hasActive;
+    idleFooter.classList.toggle("no-active", noActive);
+    idleToggleBtn.style.display = noActive ? "none" : "flex";
+
+    const showList = noActive || idleDrawerOpen;
+    if (!noActive) {
+      const displayIdleCnt = Math.max(lastTotalIdleCount, lastIdleCandidates.length);
+      setTextIfChanged(el("idleSummaryLabel"), `🕒 历史空闲 ${displayIdleCnt}`);
+      setTextIfChanged(el("idleChevron"), idleDrawerOpen ? "收起 ▴" : "展开 ▾");
+    }
+    idleList.classList.toggle("open", showList);
+
+    if (showList) {
+      const topIdle = lastIdleCandidates.slice(0, 24);
+      const sig = topIdle.map((t) => `${t.cid}:${t.title}:${t.workspaceName}:${t.isPinned}:${t.modelLabel}:${t.tokenUsage.netTokens}:${t.tokenUsage.hasCacheData ? Math.round(t.tokenUsage.cacheHitPct) : "x"}:${!isHudMode && hostConversationId === t.cid ? 1 : 0}`).join("|");
+      if (idleList.dataset.sig !== sig) {
+        idleList.dataset.sig = sig;
+        idleList.innerHTML = topIdle.map((t) => {
+          const tu = t.tokenUsage;
+          const metaStr = `${fmtTok(tu.netTokens)} · 缓存 ${tu.hasCacheData ? Math.round(tu.cacheHitPct) + "%" : "--"}`;
+          const isFocused = !isHudMode && hostConversationId && t.cid === hostConversationId;
+          return (
+            `<div class="idle-item${isFocused ? " host-focused" : ""}" data-cid="${esc(t.cid)}">` +
+              `<span class="idle-item-title">${t.workspaceName ? `[${esc(t.workspaceName)}] ` : ""}${esc(t.title)}</span>` +
+              `<span class="idle-item-meta mono-num">${metaStr}</span>` +
+              `<button class="tiny-icon-btn idle-pin-btn" data-pin-cid="${esc(t.cid)}" type="button" title="固定至主栈">☆</button>` +
+            `</div>`
+          );
+        }).join("");
+      }
+    }
+  }
+
+  /* ---------- Fast I/O Status Renderer (Inside Settings Drawer) ---------- */
+  function renderFastIoStatusUI() {
+    const mcpOn = Boolean(fastIoConfig.mcpEnabled);
+    const batchCalls = Math.round(num(fastIoStats.batchReadCalls, 0));
+    const filesCnt = Math.round(num(fastIoStats.batchReadFiles, 0));
+    const grepCnt = Math.round(num(fastIoStats.grepCalls, 0));
+    const globCnt = Math.round(num(fastIoStats.globCalls, 0));
+    const outlineCnt = Math.round(num(fastIoStats.outlineCalls, 0));
+    const searchCnt = grepCnt + globCnt + outlineCnt;
+    const savedStr = fmtSavedSec(fastIoStats.savedSecEstimate);
+
+    const dot = el("fastIoDot");
+    const txt = el("fastIoText");
+    const badge = el("fastIoSavedBadge");
+
+    const stateWord = mcpOn ? "Fast I/O 加速在线" : "Fast I/O MCP 已停用";
+    dot.className = mcpOn ? "fastio-dot" : "fastio-dot off";
+
+    const html = mcpOn
+      ? `${esc(stateWord)} · <span class="fastio-sub">批读 ${filesCnt} 文件 · 检索 ${searchCnt} 次</span>`
+      : esc(stateWord);
+    if (txt.dataset.lastHtml !== html) {
+      txt.innerHTML = html;
+      txt.dataset.lastHtml = html;
+    }
+    setTextIfChanged(badge, `(省 ~${savedStr}s)`);
+    badge.classList.toggle("zero", num(fastIoStats.savedSecEstimate, 0) <= 0);
+
+    const tip =
+      `${stateWord} | 批读 ${batchCalls}次/${filesCnt}文件 · ` +
+      `搜索 ${grepCnt}次 · 目录 ${globCnt}次 · 大纲 ${outlineCnt}次`;
+    if (el("fastIoStatusRow").title !== tip) el("fastIoStatusRow").title = tip;
+  }
+
+  /* ---------- Global Render Pipeline ---------- */
+  function renderMultiTasks(payload, opts = {}) {
+    if (!payload || typeof payload !== "object") return;
+    const nowSec = opts.localOnlyPrefs ? (Date.now() / 1000) : (num(payload.timestamp, Date.now() / 1000) || (Date.now() / 1000));
+    const cfg = payload.config && typeof payload.config === "object" ? payload.config : {};
+
+    if (!opts.localOnlyPrefs && Date.now() > configDirtyUntil) {
+      if (typeof cfg.autoHealStream === "boolean") watchdogConfig.autoHealStream = cfg.autoHealStream;
+      if (typeof cfg.stallThresholdSec === "number") watchdogConfig.stallThresholdSec = cfg.stallThresholdSec;
+
+      const fioCfg = (payload.fastIoConfig && typeof payload.fastIoConfig === "object")
+        ? payload.fastIoConfig
+        : (cfg.fastIo && typeof cfg.fastIo === "object" ? cfg.fastIo : null);
+      if (fioCfg && typeof fioCfg.mcpEnabled === "boolean") {
+        fastIoConfig.mcpEnabled = fioCfg.mcpEnabled;
+      }
+    }
+
+    if (!opts.localOnlyPrefs && payload.fastIoStats && typeof payload.fastIoStats === "object") {
+      const st = payload.fastIoStats;
+      fastIoStats.batchReadCalls = num(st.batchReadCalls, fastIoStats.batchReadCalls);
+      fastIoStats.batchReadFiles = num(st.batchReadFiles, fastIoStats.batchReadFiles);
+      fastIoStats.grepCalls = num(st.grepCalls, fastIoStats.grepCalls);
+      fastIoStats.globCalls = num(st.globCalls, fastIoStats.globCalls);
+      fastIoStats.outlineCalls = num(st.outlineCalls, fastIoStats.outlineCalls);
+      fastIoStats.savedSecEstimate = num(st.savedSecEstimate, fastIoStats.savedSecEstimate);
+    }
+
+    const hw = payload.hudWindow && typeof payload.hudWindow === "object" ? payload.hudWindow : {};
+    const cfgHud = cfg.hud && typeof cfg.hud === "object" ? cfg.hud : {};
+    if (!opts.localOnlyPrefs) {
+      hudRuntimeRunning = Boolean(hw.running || hw.visible);
+    }
+
+    if (!opts.localOnlyPrefs && Date.now() > prefsDirtyUntil && !isUserNativeResizing) {
+      const src = { ...cfgHud, ...hw };
+      if (typeof src.alwaysOnTop === "boolean") hudPrefs.alwaysOnTop = src.alwaysOnTop;
+      if (typeof src.opacity === "number" && src.opacity >= 0.5 && src.opacity <= 1) hudPrefs.opacity = src.opacity;
+      hudPrefs.theme = "light";
+      if (typeof src.width === "number" && src.width >= HUD_MIN_WIDTH && src.width <= HUD_MAX_WIDTH) hudPrefs.width = Math.round(src.width);
+      if (src.customHeight === null || src.customHeight === 0) hudPrefs.customHeight = null;
+      else if (typeof src.customHeight === "number" && src.customHeight >= HUD_STACK_MIN_H && src.customHeight <= HUD_CUSTOM_MAX_H) hudPrefs.customHeight = Math.round(src.customHeight);
+      if (typeof src.x === "number") hudPrefs.x = Math.round(src.x);
+      if (typeof src.y === "number") hudPrefs.y = Math.round(src.y);
+      if (typeof src.anchorCorner === "string" && src.anchorCorner) hudPrefs.anchorCorner = src.anchorCorner;
+      if (Array.isArray(src.pinnedIds)) hudPrefs.pinnedIds = src.pinnedIds.slice();
+    }
+
+    applyAppearance();
+    syncSettingControlsUI();
+
+    const rawTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+    const sumRaw = payload.summary && typeof payload.summary === "object" ? payload.summary : null;
+    const pinnedSet = new Set(hudPrefs.pinnedIds || []);
+    const allTasks = rawTasks.map((r) => normalizeTask(r, nowSec, pinnedSet)).filter((t) => Boolean(t.cid));
+
+    const bucketRank = (t) => (t.bucket === "ALERT" ? 0 : t.isPinned ? 1 : t.bucket === "RUNNING" ? 2 : t.bucket === "RECENT" ? 3 : 4);
+    const sorted = allTasks.slice().sort((a, b) => {
+      const ra = bucketRank(a), rb = bucketRank(b);
+      if (ra !== rb) return ra - rb;
+      if (ra <= 2) {
+        const ba = a.runBatchStartedAt || 0, bb = b.runBatchStartedAt || 0;
+        if (ba !== bb && ba > 0 && bb > 0) return ba - bb;
+      }
+      if (ra === 3) return (b.justFinishedAt || 0) - (a.justFinishedAt || 0);
+      const ma = a.lastModifiedAt || 0, mb = b.lastModifiedAt || 0;
+      if (ma !== mb) return mb - ma;
+      return a.taskKey.localeCompare(b.taskKey);
+    });
+
+    const activeCandidates = [];
+    const idleCandidates = [];
+    let recentKept = 0;
+    let nextRecentExpireMs = 0;
+
+    for (const t of sorted) {
+      if (t.bucket === "ALERT" || t.isPinned || t.bucket === "RUNNING") {
+        activeCandidates.push(t);
+      } else if (t.bucket === "RECENT" && recentKept < 2 && !archivedRecentKeys.has(`${t.taskKey}:${t.justFinishedAt}`)) {
+        recentKept++;
+        activeCandidates.push(t);
+        if (t.justFinishedAt > 0) {
+          const exp = Math.round((t.justFinishedAt + 181) * 1000);
+          if (nextRecentExpireMs === 0 || exp < nextRecentExpireMs) nextRecentExpireMs = exp;
+        }
+      } else {
+        idleCandidates.push(t);
+      }
+    }
+    earliestRecentExpireAtMs = nextRecentExpireMs;
+
+    let calcAlert = 0, calcRunning = 0, calcRecent = 0, liveSum = 0, calcWaitTtft = false, calcAnyGen = false;
+    for (const t of allTasks) {
+      if (t.bucket === "ALERT") calcAlert++;
+      else if (t.bucket === "RUNNING") calcRunning++;
+      else if (t.bucket === "RECENT") calcRecent++;
+      const ownLive = t.tokenSpeed.active && t.tokenSpeed.phase !== "waiting_ttft" ? t.tokenSpeed.displayTokensPerSec : 0;
+      liveSum += ownLive + t.swarmSummary.liveTokensPerSec;
+      if ((t.tokenSpeed.active && t.tokenSpeed.phase === "waiting_ttft") || t.swarmSummary.anyWaitingTtft) calcWaitTtft = true;
+      if (t.anyGenerating || (t.tokenSpeed.active && t.tokenSpeed.phase !== "waiting_ttft") || t.swarmSummary.anyGenerating) calcAnyGen = true;
+    }
+    const calcLiveTps = Math.round(liveSum * 10) / 10;
+    const alertCount = sumRaw && sumRaw.alertCount !== undefined ? Math.max(calcAlert, Math.round(num(sumRaw.alertCount, calcAlert))) : calcAlert;
+    const runningCount = sumRaw && sumRaw.runningCount !== undefined ? Math.round(num(sumRaw.runningCount, calcRunning)) : calcRunning;
+    const recentCount = sumRaw && sumRaw.recentCount !== undefined ? Math.round(num(sumRaw.recentCount, calcRecent)) : calcRecent;
+    const totalLiveTps = sumRaw && sumRaw.totalLiveTps !== undefined ? num(sumRaw.totalLiveTps, calcLiveTps) : calcLiveTps;
+    const anyGlobalWaitingTtft = sumRaw && sumRaw.anyWaitingTtft !== undefined ? Boolean(sumRaw.anyWaitingTtft) : calcWaitTtft;
+    const anyGlobalGenerating = sumRaw && sumRaw.anyGenerating !== undefined ? Boolean(sumRaw.anyGenerating) : calcAnyGen;
+    const totalTaskCount = allTasks.length > 0
+      ? allTasks.length
+      : (sumRaw && sumRaw.idleCount !== undefined ? (alertCount + runningCount + recentCount + Math.round(num(sumRaw.idleCount, 0))) : 0);
+
+    lastIdleCandidates = idleCandidates;
+    lastTotalIdleCount = idleCandidates.length;
+    const hasActiveCards = activeCandidates.length > 0;
+
+    if (prevHadActiveCards !== hasActiveCards) {
+      manualIdleExpanded = false;
+      manualActiveCollapsed = false;
+      prevHadActiveCards = hasActiveCards;
+    }
+    if (idleCandidates.length === 0) {
+      manualIdleExpanded = false;
+    }
+    lastHasActiveCards = hasActiveCards;
+
+    const showActiveStack = hasActiveCards && !manualActiveCollapsed;
+    const showIdleStandalone = !hasActiveCards && manualIdleExpanded && idleCandidates.length > 0;
+    const shouldBeExpanded = Boolean(settingsOpen || showActiveStack || showIdleStandalone);
+    const isCollapsed = !shouldBeExpanded;
+
+    lastRunningCount = runningCount;
+    lastAlertCount = alertCount;
+
+    /* Anti-Flicker Hold */
+    const nowWallMs = Date.now();
+    let displayLiveTps = totalLiveTps;
+    let displayWaitingTtft = anyGlobalWaitingTtft;
+    let displayAnyGenerating = anyGlobalGenerating;
+
+    if (totalLiveTps > 0) {
+      if (antiFlickerTimerId !== null) {
+        clearTimeout(antiFlickerTimerId);
+        antiFlickerTimerId = null;
+      }
+      heldGlobalLiveTps = totalLiveTps;
+      heldGlobalLiveAtMs = nowWallMs;
+      heldDropPolls = 0;
+      displayWaitingTtft = false;
+      displayAnyGenerating = false;
+    } else if (runningCount <= 0) {
+      if (antiFlickerTimerId !== null) {
+        clearTimeout(antiFlickerTimerId);
+        antiFlickerTimerId = null;
+      }
+      heldGlobalLiveTps = 0;
+      heldGlobalLiveAtMs = 0;
+      heldDropPolls = 0;
+    } else if (heldGlobalLiveTps > 0) {
+      const elapsedSinceLive = nowWallMs - heldGlobalLiveAtMs;
+      const canHoldDrop =
+        elapsedSinceLive >= 0 &&
+        elapsedSinceLive < GLOBAL_TPS_HOLD_MS &&
+        heldDropPolls < 2 &&
+        (!anyGlobalWaitingTtft || heldDropPolls < 1);
+      if (canHoldDrop) {
+        if (!opts.localOnlyPrefs) heldDropPolls++;
+        displayLiveTps = heldGlobalLiveTps;
+        displayWaitingTtft = false;
+        displayAnyGenerating = false;
+        if (antiFlickerTimerId === null) {
+          const remMs = Math.max(30, GLOBAL_TPS_HOLD_MS - elapsedSinceLive + 20);
+          antiFlickerTimerId = setTimeout(() => {
+            antiFlickerTimerId = null;
+            heldGlobalLiveTps = 0;
+            heldGlobalLiveAtMs = 0;
+            heldDropPolls = 0;
+            if (lastFullPayload) {
+              renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+              pollIntervalMs = computeAdaptivePollInterval();
+              perfStats.pollIntervalMs = pollIntervalMs;
+              syncTickTimer();
+              syncCalmAnimationFreeze();
+            }
+          }, remMs);
+        }
+      } else {
+        if (antiFlickerTimerId !== null) {
+          clearTimeout(antiFlickerTimerId);
+          antiFlickerTimerId = null;
+        }
+        heldGlobalLiveTps = 0;
+        heldGlobalLiveAtMs = 0;
+        heldDropPolls = 0;
+      }
+    }
+
+    lastHasLiveStream = Boolean(displayLiveTps > 0 || displayWaitingTtft || displayAnyGenerating);
+
+    const globalTpsValText = displayLiveTps > 0
+      ? `${fmtRate(displayLiveTps)} tok/s`
+      : (displayWaitingTtft ? "等待首字" : (displayAnyGenerating ? "生成中" : "0.0 tok/s"));
+    const globalTpsStateCls = displayLiveTps > 0 ? "active" : ((displayWaitingTtft || displayAnyGenerating) ? "waiting" : "idle");
+
+    /* Embedded Mode: Low-Power Dock Controller (2500ms) */
+    if (!isHudMode && hudRuntimeRunning) {
+      el("capsuleUnit").classList.remove("visible", "expanded", "has-global-alert");
+      el("dockPanel").classList.add("visible");
+      setTextIfChanged(el("dockSummaryText"), `${runningCount} 运行中 · ${alertCount} 待处理`);
+      const dockTpsEl = el("dockLiveTps");
+      const nextDockCls = "global-tps-badge " + globalTpsStateCls;
+      if (dockTpsEl.className !== nextDockCls) dockTpsEl.className = nextDockCls;
+      setTextIfChanged(el("dockLiveTpsVal"), globalTpsValText);
+      timerRegistry.clear();
+      syncTickTimer();
+      syncCalmAnimationFreeze();
+      pollIntervalMs = computeAdaptivePollInterval();
+      perfStats.pollIntervalMs = pollIntervalMs;
+      return;
+    }
+
+    if (isHudMode) {
+      const nextVm = shouldBeExpanded ? "stack" : "pill";
+      if (hudPrefs.viewMode !== nextVm) {
+        hudPrefs.viewMode = nextVm;
+        lastSentSize = { w: 0, h: 0, anchor: "", mode: "", idleOpen: false };
+        if (nextVm === "stack") stackDomDirty = false;
+        saveHudPrefs({ viewMode: nextVm });
+      }
+    } else {
+      embedCollapsed = !shouldBeExpanded;
+    }
+
+    el("dockPanel").classList.remove("visible");
+
+    /* Update Unified Capsule Top Bar (#pillShell) */
+    const capsuleUnit = el("capsuleUnit");
+    capsuleUnit.classList.add("visible");
+    capsuleUnit.classList.toggle("expanded", shouldBeExpanded);
+    capsuleUnit.classList.toggle("has-global-alert", alertCount > 0);
+    if (!shouldBeExpanded && isHudMode && !hasWebViewBridge()) {
+      capsuleUnit.style.height = "";
+    }
+
+    const pill = el("pillShell");
+    pill.classList.toggle("no-expand", !hasActiveCards && idleCandidates.length === 0 && !settingsOpen);
+    pill.classList.toggle("idle-dim", isCollapsed && alertCount === 0 && runningCount === 0);
+    el("pillDot").className = "pill-dot" + (alertCount > 0 ? " alert" : (runningCount > 0 ? " running" : ""));
+
+    const alertTag = el("pillAlertTag");
+    let pillStatusStr = "";
+    if (alertCount > 0 && runningCount > 0) {
+      pillStatusStr = `${runningCount} 运行`;
+      setTextIfChanged(alertTag, `⚠️ ${alertCount}`);
+      alertTag.classList.add("visible");
+    } else if (alertCount > 0) {
+      pillStatusStr = `⚠️ ${alertCount} 待处理`;
+      alertTag.classList.remove("visible");
+    } else if (runningCount > 0) {
+      pillStatusStr = `${runningCount} 运行中`;
+      alertTag.classList.remove("visible");
+    } else {
+      pillStatusStr = `全部空闲 (${totalTaskCount})`;
+      alertTag.classList.remove("visible");
+    }
+    setTextIfChanged(el("pillStatusText"), pillStatusStr);
+    setTextIfChanged(el("pillTpsVal"), globalTpsValText);
+    const tpsGroupEl = el("pillTpsGroup");
+    const nextTpsCls = "pill-tps-group" + (globalTpsStateCls === "idle" ? "" : " " + globalTpsStateCls);
+    if (tpsGroupEl.className !== nextTpsCls) tpsGroupEl.className = nextTpsCls;
+
+    /* Short-Circuit when Collapsed */
+    if (isCollapsed) {
+      if (!showActiveStack) {
+        el("stackScroll").style.display = "none";
+        const collapsedStackList = el("stackList");
+        for (const [k, rec] of Array.from(cardRecords.entries())) {
+          if (rec.refs.root.parentNode === collapsedStackList) collapsedStackList.removeChild(rec.refs.root);
+          rec.subNodes.clear();
+          cardRecords.delete(k);
+        }
+        renderIdleListDom(false, false);
+      }
+      stackDomDirty = showActiveStack;
+      perfStats.pillShortCircuits++;
+      timerRegistry.clear();
+      syncTickTimer();
+      syncCalmAnimationFreeze();
+      pollIntervalMs = computeAdaptivePollInterval();
+      perfStats.pollIntervalMs = pollIntervalMs;
+      if (isHudMode) scheduleHudResize();
+      return;
+    }
+
+    /* Expanded Rendering (HUD Stack or Embedded Standalone) */
+    stackDomDirty = false;
+    perfStats.stackRenders++;
+    renderFastIoStatusUI();
+
+    const stackScroll = el("stackScroll");
+    const stackList = el("stackList");
+    stackScroll.style.display = showActiveStack ? "block" : "none";
+
+    const activeKeySet = new Set();
+    if (showActiveStack) {
+      activeCandidates.forEach((t, i) => {
+        activeKeySet.add(t.taskKey);
+        let rec = cardRecords.get(t.taskKey);
+        if (!rec) {
+          rec = createCardRecord(t.taskKey);
+          cardRecords.set(t.taskKey, rec);
+        }
+        patchCardRecord(rec, t);
+        const curNode = stackList.children[i];
+        if (curNode !== rec.refs.root) {
+          stackList.insertBefore(rec.refs.root, curNode || null);
+        }
+      });
+    }
+
+    for (const [k, rec] of Array.from(cardRecords.entries())) {
+      if (!activeKeySet.has(k)) {
+        if (rec.refs.root.parentNode === stackList) stackList.removeChild(rec.refs.root);
+        rec.subNodes.clear();
+        cardRecords.delete(k);
+        timerRegistry.delete(`main:${k}`);
+        timerRegistry.delete(`speed:${k}`);
+        clearTimerPrefix(`sub:${k}:`);
+      }
+    }
+
+    renderIdleListDom(showActiveStack, showIdleStandalone);
+
+    syncTickTimer();
+    syncCalmAnimationFreeze();
+    pollIntervalMs = computeAdaptivePollInterval();
+    perfStats.pollIntervalMs = pollIntervalMs;
+    scheduleHudResize();
+  }
+
+  /* ---------- Adaptive Non-Overlapping Poller with sinceRev Short-Circuit ---------- */
+  function scheduleNextPoll(delayMs) {
+    if (pollTimerId !== null) clearTimeout(pollTimerId);
+    const wait = typeof delayMs === "number" ? delayMs : pollIntervalMs;
+    pollTimerId = setTimeout(() => {
+      pollTimerId = null;
+      pollNow(false);
+    }, wait);
+  }
+
+  async function pollNow(forceFull = false) {
+    if (pollTimerId !== null) {
+      clearTimeout(pollTimerId);
+      pollTimerId = null;
+    }
+    if (pollInFlight) {
+      pollQueuedImmediate = true;
+      if (forceFull) pollQueuedForceFull = true;
+      return;
+    }
+    pollInFlight = true;
+    pollQueuedImmediate = false;
+
+    if (earliestRecentExpireAtMs > 0 && Date.now() >= earliestRecentExpireAtMs) {
+      earliestRecentExpireAtMs = 0;
+      forceFull = true;
+    }
+
+    try {
+      let query = "";
+      if (!isHudMode && hostConversationId) {
+        query = `hintConversationId=${encodeURIComponent(hostConversationId)}`;
+      }
+      if (!forceFull && lastRev !== null && lastFullPayload !== null && !stackDomDirty) {
+        query += (query ? "&" : "") + `sinceRev=${encodeURIComponent(String(lastRev))}`;
+      }
+
+      const data = await apiFetch(query ? `/api/tasks?${query}` : "/api/tasks");
+
+      const t0 = performance.now();
+      perfStats.pollsTotal++;
+      lastPollCompletedAt = Date.now();
+
+      if (isConnOffline) {
+        isConnOffline = false;
+        el("connDot").classList.remove("offline");
+        el("dockConnDot").classList.remove("offline");
+        el("connDot").title = "实时流运行正常";
+      }
+
+      if (data && data.rev !== undefined && data.rev !== null) {
+        lastRev = data.rev;
+        perfStats.lastRev = lastRev;
+      }
+
+      if (data && data.unchanged === true && lastFullPayload !== null && !stackDomDirty) {
+        if (heldGlobalLiveTps > 0 && (Date.now() - heldGlobalLiveAtMs) >= GLOBAL_TPS_HOLD_MS) {
+          if (antiFlickerTimerId !== null) {
+            clearTimeout(antiFlickerTimerId);
+            antiFlickerTimerId = null;
+          }
+          heldGlobalLiveTps = 0;
+          heldGlobalLiveAtMs = 0;
+          heldDropPolls = 0;
+          renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+        }
+        perfStats.pollsShortCircuited++;
+        pollIntervalMs = computeAdaptivePollInterval();
+        perfStats.pollIntervalMs = pollIntervalMs;
+        syncTickTimer();
+        syncCalmAnimationFreeze();
+        const dt = +(performance.now() - t0).toFixed(4);
+        perfStats.lastPollExecMs = dt;
+        perfStats.lastUnchangedExecMs = dt;
+        return;
+      }
+
+      lastFullPayload = data;
+      renderMultiTasks(data);
+      perfStats.lastPollExecMs = +(performance.now() - t0).toFixed(4);
+    } catch (err) {
+      pollIntervalMs = POLL_IDLE_MS;
+      perfStats.pollIntervalMs = pollIntervalMs;
+      if (!isConnOffline) {
+        isConnOffline = true;
+        el("connDot").classList.add("offline");
+        el("dockConnDot").classList.add("offline");
+      }
+      el("connDot").title = `连接重试中: ${err.message}`;
+    } finally {
+      pollInFlight = false;
+      const nextForce = pollQueuedForceFull;
+      const nextImm = pollQueuedImmediate;
+      pollQueuedImmediate = false;
+      pollQueuedForceFull = false;
+      if (nextImm) {
+        if (pollTimerId !== null) clearTimeout(pollTimerId);
+        pollTimerId = setTimeout(() => { pollTimerId = null; pollNow(nextForce); }, 24);
+      } else {
+        scheduleNextPoll();
+      }
+    }
+  }
+
+  /* ---------- Settings & HUD Control Actions ---------- */
+  function syncSettingControlsUI() {
+    el("toggleFastIoMcp").classList.toggle("on", Boolean(fastIoConfig.mcpEnabled));
+    el("toggleFastIoMcp").setAttribute("aria-checked", String(Boolean(fastIoConfig.mcpEnabled)));
+
+    el("toggleAlwaysOnTop").classList.toggle("on", Boolean(hudPrefs.alwaysOnTop));
+    el("toggleAlwaysOnTop").setAttribute("aria-checked", String(Boolean(hudPrefs.alwaysOnTop)));
+
+    const isManualH = typeof hudPrefs.customHeight === "number" && hudPrefs.customHeight >= HUD_STACK_MIN_H;
+    const resetBtn = el("resetHeightBtn");
+    resetBtn.classList.toggle("is-manual", isManualH);
+    setTextIfChanged(
+      resetBtn,
+      isManualH ? `↕ 恢复自适应高度 (${Math.round(hudPrefs.customHeight)}px)` : "↕ 自适应伸缩中"
+    );
+
+    el("toggleAutoHeal").classList.toggle("on", Boolean(watchdogConfig.autoHealStream));
+    el("toggleAutoHeal").setAttribute("aria-checked", String(Boolean(watchdogConfig.autoHealStream)));
+    el("thresholdGroup").querySelectorAll(".seg-btn").forEach((b) => {
+      b.classList.toggle("active", Number(b.dataset.sec) === Number(watchdogConfig.stallThresholdSec));
+    });
+    const pctVal = Math.round((Number(hudPrefs.opacity) || 0.97) * 100);
+    if (document.activeElement !== el("opacitySlider")) el("opacitySlider").value = String(pctVal);
+    setTextIfChanged(el("opacityVal"), `${pctVal}%`);
+  }
+
+  async function saveWatchdogConfig(patch) {
+    Object.assign(watchdogConfig, patch);
+    configDirtyUntil = Date.now() + 1800;
+    syncSettingControlsUI();
+    try {
+      await apiFetch("/api/config", { method: "POST", body: JSON.stringify(patch) });
+    } catch (_) {}
+  }
+
+  async function saveFastIoConfig(patch) {
+    Object.assign(fastIoConfig, patch);
+    configDirtyUntil = Date.now() + 2000;
+    syncSettingControlsUI();
+    renderFastIoStatusUI();
+    const body = {
+      fastIo: {
+        mcpEnabled: Boolean(fastIoConfig.mcpEnabled),
+      },
+      fastIoMcpEnabled: Boolean(fastIoConfig.mcpEnabled),
+    };
+    try {
+      await apiFetch("/api/config", { method: "POST", body: JSON.stringify(body) });
+    } catch (_) {}
+  }
+
+  async function saveHudPrefs(patch, action = "update_prefs") {
+    Object.assign(hudPrefs, patch, { theme: "light" });
+    prefsDirtyUntil = Date.now() + 1800;
+    applyAppearance();
+    syncSettingControlsUI();
+    try {
+      await apiFetch("/api/hud", {
+        method: "POST",
+        body: JSON.stringify({ ...patch, prefs: patch, action }),
+      });
+    } catch (_) {}
+  }
+
+  function togglePinConversation(cid) {
+    if (!cid) return;
+    const list = Array.isArray(hudPrefs.pinnedIds) ? hudPrefs.pinnedIds.slice() : [];
+    const idx = list.indexOf(cid);
+    if (idx >= 0) list.splice(idx, 1);
+    else list.push(cid);
+    hudPrefs.pinnedIds = list;
+    if (lastFullPayload) renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+    saveHudPrefs({ pinnedIds: list }).finally(() => pollNow(true));
+  }
+
+  async function dockBackToSidebar() {
+    prefsDirtyUntil = Date.now() + 2200;
+    hudPrefs.enabled = false;
+    hudRuntimeRunning = false;
+    try {
+      await apiFetch("/api/hud", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "close",
+          enabled: false,
+          source: isHudMode ? "hud_drawer" : "sidebar_dock",
+          prefs: { enabled: false },
+        }),
+      });
+    } catch (_) {}
+    if (isHudMode) HostWindowBridge.close();
+    else pollNow(true);
+  }
+
+  /* ---------- Wire UI Controls ---------- */
+  el("pillSettingsBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    settingsOpen = !settingsOpen;
+    syncExpansionStateAfterUserAction();
+  });
+
+  el("resetHeightBtn").addEventListener("click", () => resetCustomHeight());
+  el("dockAutoFitBtn").addEventListener("click", () => {
+    saveHudPrefs({ customHeight: null }, "reset_auto_height");
+  });
+
+  el("dockBackBtn").addEventListener("click", dockBackToSidebar);
+
+  el("popOutHudBtn").addEventListener("click", async () => {
+    prefsDirtyUntil = Date.now() + 2000;
+    hudPrefs.enabled = true;
+    try {
+      await apiFetch("/api/hud", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "open",
+          enabled: true,
+          source: "sidebar_popout",
+          prefs: { enabled: true },
+        }),
+      });
+      pollNow(true);
+    } catch (_) {}
+  });
+
+  el("dockFlashBtn").addEventListener("click", () => {
+    apiFetch("/api/hud", { method: "POST", body: JSON.stringify({ action: "flash" }) }).catch(() => {});
+  });
+  el("dockResetPosBtn").addEventListener("click", () => {
+    apiFetch("/api/hud", { method: "POST", body: JSON.stringify({ action: "reset_position" }) }).catch(() => {});
+  });
+  el("dockRecallBtn").addEventListener("click", dockBackToSidebar);
+
+  const bindSwitchKey = (switchEl, handler) => {
+    switchEl.addEventListener("click", handler);
+    switchEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handler();
+      }
+    });
+  };
+
+  bindSwitchKey(el("toggleFastIoMcp"), () => {
+    saveFastIoConfig({ mcpEnabled: !fastIoConfig.mcpEnabled });
+  });
+  bindSwitchKey(el("toggleAlwaysOnTop"), () => {
+    const next = !hudPrefs.alwaysOnTop;
+    HostWindowBridge.setTopMost(next);
+    saveHudPrefs({ alwaysOnTop: next });
+  });
+  bindSwitchKey(el("toggleAutoHeal"), () => {
+    saveWatchdogConfig({ autoHealStream: !watchdogConfig.autoHealStream });
+  });
+
+  el("thresholdGroup").querySelectorAll(".seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      saveWatchdogConfig({ stallThresholdSec: Number(btn.dataset.sec) || 0 });
+    });
+  });
+
+  let opacityDebounce = null;
+  el("opacitySlider").addEventListener("input", (ev) => {
+    const val = clamp(Number(ev.target.value) || 97, 72, 100) / 100;
+    hudPrefs.opacity = val;
+    prefsDirtyUntil = Date.now() + 1800;
+    setTextIfChanged(el("opacityVal"), `${Math.round(val * 100)}%`);
+    applyAppearance();
+    if (opacityDebounce) clearTimeout(opacityDebounce);
+    opacityDebounce = setTimeout(() => {
+      opacityDebounce = null;
+      saveHudPrefs({ opacity: val });
+    }, 280);
+  });
+
+  el("idleToggleBtn").addEventListener("click", () => {
+    idleDrawerOpen = !idleDrawerOpen;
+    renderIdleListDom(
+      Boolean(lastHasActiveCards && !manualActiveCollapsed),
+      Boolean(!lastHasActiveCards && manualIdleExpanded && lastIdleCandidates.length > 0)
+    );
+    scheduleHudResize();
+  });
+
+  el("idleList").addEventListener("click", (e) => {
+    if (!(e.target instanceof Element)) return;
+    const btn = e.target.closest("[data-pin-cid]");
+    if (btn) {
+      e.stopPropagation();
+      togglePinConversation(btn.getAttribute("data-pin-cid") || "");
+      return;
+    }
+    const row = e.target.closest(".idle-item");
+    if (!isHudMode && row && row.dataset.cid && window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: "toggle-conversation", payload: { conversationId: row.dataset.cid } }, "*");
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && settingsOpen) {
+      settingsOpen = false;
+      syncExpansionStateAfterUserAction();
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    syncTickTimer();
+    syncCalmAnimationFreeze();
+    pollIntervalMs = computeAdaptivePollInterval();
+    perfStats.pollIntervalMs = pollIntervalMs;
+    if (!document.hidden) {
+      if (isHudMode) scheduleHudResize();
+      pollNow(false);
+    }
+  });
+  window.addEventListener("focus", () => {
+    if (Date.now() - lastPollCompletedAt > 450) pollNow(false);
+  });
+
+  el("capsuleUnit").classList.add("visible");
+  el("capsuleUnit").classList.remove("expanded");
+  applyAppearance();
+  syncSettingControlsUI();
+  renderFastIoStatusUI();
+  syncCalmAnimationFreeze();
+  pollNow(true);
+})();
+  </script>
+</body>
+</html>

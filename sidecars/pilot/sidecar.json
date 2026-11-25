@@ -1,0 +1,29 @@
+{
+  "command": "python",
+  "args": [
+    "-u",
+    "server.py"
+  ],
+  "restart_policy": "always",
+  "display_name": "Flow Pilot",
+  "description": "科学仪器级轻量多任务悬浮窗、三级实时 tok/s 测速、Fast I/O 加速与断流自愈中枢",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "Flow Pilot",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Flow Pilot"
+      },
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_SIDEBAR",
+        "title": "Flow Pilot"
+      }
+    ]
+  }
+}

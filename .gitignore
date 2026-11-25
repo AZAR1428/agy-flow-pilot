@@ -1,0 +1,34 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+
+# Temp, backup, logs & debug symbols
+*.tmp
+*.bak
+*.log
+*.pdb
+
+# Environment secrets & local audit denylist
+.env
+.env.*
+.audit-denylist.local
+
+# Build outputs
+bin/
+obj/
+
+# Editor & IDE metadata
+.vscode/
+.idea/
+
+# Runtime HUD / WebView2 / plugin state & local databases
+*.WebView2/
+edge_hud_udf/
+nodes/
+hook_state/
+*.sqlite
+*.db
+
+# OS metadata
+.DS_Store
+Thumbs.db

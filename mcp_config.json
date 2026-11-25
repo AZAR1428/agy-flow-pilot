@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "fast_io": {
+      "command": "python",
+      "args": [
+        "-S",
+        "-B",
+        "-u",
+        "${PLUGIN_ROOT}/scripts/fast_io_mcp.py"
+      ],
+      "tools": {
+        "fast_io_batch_read": {
+          "eager": true
+        },
+        "fast_io_grep": {
+          "eager": true
+        },
+        "fast_io_glob_tree": {
+          "eager": true
+        },
+        "fast_io_outline": {
+          "eager": true
+        }
+      }
+    }
+  }
+}
