@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight multi-task stream telemetry, on-demand error diagnosis & watchdog for Flow Pilot v3.8.0."""
+"""Ultra-lightweight multi-task stream telemetry, on-demand error diagnosis & watchdog for Flow Pilot v3.8.1."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ SPEED_PHASE_LABELS: dict[str, str] = {
 DEFAULT_HUD_CONFIG: dict[str, Any] = {
     "enabled": True, "viewMode": "pill", "alwaysOnTop": True,
     "opacity": 0.96, "theme": "light", "width": 388, "customHeight": None,
-    "x": None, "y": None, "anchorCorner": "top-right", "pinnedIds": [],
+    "x": None, "y": None, "physX": None, "physY": None, "anchorCorner": "top-right", "pinnedIds": [],
 }
 
 DEFAULT_FAST_IO_CONFIG: dict[str, Any] = {"mcpEnabled": True}
@@ -294,8 +294,16 @@ def _sanitize_hud_config(raw: Any, base: Optional[dict[str, Any]] = None) -> dic
                     out[ck] = None
                 else:
                     cf = _finite_float(raw[ck])
-                    if cf is not None:
+                    if cf is not None and -10000.0 < cf < 30000.0:
                         out[ck] = int(round(cf))
+        for pk in ("physX", "physY"):
+            if pk in raw:
+                if raw[pk] is None:
+                    out[pk] = None
+                else:
+                    pf = _finite_float(raw[pk])
+                    if pf is not None and -16000.0 < pf < 32768.0:
+                        out[pk] = int(round(pf))
         ac = raw.get("anchorCorner")
         if isinstance(ac, str) and ac.strip().lower() in ("top-left", "top-right", "bottom-left", "bottom-right"):
             out["anchorCorner"] = ac.strip().lower()
@@ -322,7 +330,11 @@ def _sanitize_hud_config(raw: Any, base: Optional[dict[str, Any]] = None) -> dic
     for ck in ("x", "y"):
         if out.get(ck) is not None:
             cf0 = _finite_float(out[ck])
-            out[ck] = int(round(cf0)) if cf0 is not None else None
+            out[ck] = int(round(cf0)) if (cf0 is not None and -10000.0 < cf0 < 30000.0) else None
+    for pk in ("physX", "physY"):
+        if out.get(pk) is not None:
+            pf0 = _finite_float(out[pk])
+            out[pk] = int(round(pf0)) if (pf0 is not None and -16000.0 < pf0 < 32768.0) else None
     if out.get("anchorCorner") not in ("top-left", "top-right", "bottom-left", "bottom-right"):
         out["anchorCorner"] = "top-right"
     out["theme"] = "light"

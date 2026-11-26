@@ -14,8 +14,8 @@ using Microsoft.Web.WebView2.Core;
 
 [assembly: AssemblyTitle("FlowPilotHost")]
 [assembly: AssemblyProduct("Flow Pilot")]
-[assembly: AssemblyVersion("3.8.0.0")]
-[assembly: AssemblyFileVersion("3.8.0.0")]
+[assembly: AssemblyVersion("3.8.1.0")]
+[assembly: AssemblyFileVersion("3.8.1.0")]
 
 namespace AgyFlowPilot
 {
@@ -67,6 +67,7 @@ namespace AgyFlowPilot
         public const uint SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_NOOWNERZORDER = 0x0200;
 
+        public const uint MONITOR_DEFAULTTONULL = 0x00000000;
         public const uint MONITOR_DEFAULTTOPRIMARY = 0x00000001;
         public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
@@ -113,6 +114,17 @@ namespace AgyFlowPilot
             public uint dwFlags;
         }
 
+        public struct MonitorDisplayInfo
+        {
+            public IntPtr Handle;
+            public RECT MonitorRect;
+            public RECT WorkRect;
+            public uint Dpi;
+            public bool IsPrimary;
+        }
+
+        public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiFlag);
         [DllImport("shcore.dll", SetLastError = true)]
@@ -135,6 +147,8 @@ namespace AgyFlowPilot
         public static extern bool ReleaseCapture();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")]
+        public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
         [DllImport("user32.dll")]
         public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
         [DllImport("user32.dll")]
@@ -253,7 +267,70 @@ namespace AgyFlowPilot
             return GetWorkAreaFromMonitor(hMon);
         }
 
-        public static RECT GetCursorOrPrimaryWorkArea(out uint dpi)
+        public static bool TryGetMonitorDisplayInfo(IntPtr hMon, out MonitorDisplayInfo info)
+        {
+            info = new MonitorDisplayInfo();
+            if (hMon == IntPtr.Zero) return false;
+            try
+            {
+                MONITORINFO mi = new MONITORINFO();
+                mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+                if (GetMonitorInfo(hMon, ref mi) && mi.rcMonitor.Width > 0 && mi.rcMonitor.Height > 0)
+                {
+                    info.Handle = hMon;
+                    info.MonitorRect = mi.rcMonitor;
+                    info.WorkRect = (mi.rcWork.Width > 0 && mi.rcWork.Height > 0) ? mi.rcWork : mi.rcMonitor;
+                    info.Dpi = GetSafeDpiForMonitor(hMon);
+                    info.IsPrimary = (mi.dwFlags & 1u) != 0;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public static MonitorDisplayInfo[] GetAllMonitors()
+        {
+            List<MonitorDisplayInfo> list = new List<MonitorDisplayInfo>();
+            try
+            {
+                EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate(IntPtr hMon, IntPtr hdc, ref RECT clipRect, IntPtr data)
+                {
+                    MonitorDisplayInfo info;
+                    if (TryGetMonitorDisplayInfo(hMon, out info))
+                        list.Add(info);
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch { }
+
+            if (list.Count == 0)
+            {
+                uint primaryDpi;
+                RECT fbWork = GetPrimaryWorkArea(out primaryDpi);
+                Rectangle fbBounds = Screen.PrimaryScreen != null
+                    ? Screen.PrimaryScreen.Bounds
+                    : new Rectangle(fbWork.Left, fbWork.Top, fbWork.Width, fbWork.Height);
+                RECT fbMon = new RECT
+                {
+                    Left = fbBounds.Left,
+                    Top = fbBounds.Top,
+                    Right = fbBounds.Right,
+                    Bottom = fbBounds.Bottom
+                };
+                list.Add(new MonitorDisplayInfo
+                {
+                    Handle = IntPtr.Zero,
+                    MonitorRect = (fbMon.Width > 0 && fbMon.Height > 0) ? fbMon : fbWork,
+                    WorkRect = fbWork,
+                    Dpi = primaryDpi,
+                    IsPrimary = true
+                });
+            }
+            return list.ToArray();
+        }
+
+        public static MonitorDisplayInfo GetCursorOrPrimaryMonitorInfo()
         {
             try
             {
@@ -261,20 +338,35 @@ namespace AgyFlowPilot
                 if (GetCursorPos(out curPt))
                 {
                     IntPtr hMon = MonitorFromPoint(curPt, MONITOR_DEFAULTTONEAREST);
-                    if (hMon != IntPtr.Zero)
-                    {
-                        MONITORINFO mi = new MONITORINFO();
-                        mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
-                        if (GetMonitorInfo(hMon, ref mi) && mi.rcWork.Width > 0 && mi.rcWork.Height > 0)
-                        {
-                            dpi = GetSafeDpiForMonitor(hMon);
-                            return mi.rcWork;
-                        }
-                    }
+                    MonitorDisplayInfo curInfo;
+                    if (TryGetMonitorDisplayInfo(hMon, out curInfo))
+                        return curInfo;
                 }
             }
             catch { }
-            return GetPrimaryWorkArea(out dpi);
+
+            IntPtr hPri = MonitorFromPoint(new POINT { X = 0, Y = 0 }, MONITOR_DEFAULTTOPRIMARY);
+            MonitorDisplayInfo priInfo;
+            if (TryGetMonitorDisplayInfo(hPri, out priInfo))
+                return priInfo;
+
+            uint dpi;
+            RECT work = GetPrimaryWorkArea(out dpi);
+            return new MonitorDisplayInfo
+            {
+                Handle = IntPtr.Zero,
+                MonitorRect = work,
+                WorkRect = work,
+                Dpi = dpi,
+                IsPrimary = true
+            };
+        }
+
+        public static RECT GetCursorOrPrimaryWorkArea(out uint dpi)
+        {
+            MonitorDisplayInfo info = GetCursorOrPrimaryMonitorInfo();
+            dpi = info.Dpi >= 72 ? info.Dpi : GetSafeSystemDpi();
+            return info.WorkRect;
         }
 
         private static RECT GetWorkAreaFromMonitor(IntPtr hMon)
@@ -305,6 +397,8 @@ namespace AgyFlowPilot
         public string Theme = "light";
         public int? SavedStackWidth;
         public int? SavedCustomHeight;
+        public int? InitialPhysicalX;
+        public int? InitialPhysicalY;
         public int? InitialLogicalX;
         public int? InitialLogicalY;
         public int? InitialLogicalW;
@@ -314,7 +408,7 @@ namespace AgyFlowPilot
 
     internal sealed class HudForm : Form
     {
-        public const string HostVersion = "3.8.0";
+        public const string HostVersion = "3.8.1";
         public const string LightweightBrowserArgs =
             "--disable-features=msSmartScreenProtection,Translate,msWebOOUI,msPdfOOUI,SpareRendererForSitePerProcess --renderer-process-limit=1 --autoplay-policy=no-user-gesture-required --no-first-run --no-default-browser-check";
 
@@ -355,8 +449,18 @@ namespace AgyFlowPilot
         private bool _inInteractiveMove;
         private bool _inInteractiveResize;
         private bool _inExternalSizeMove;
+        private bool _dpiChangedInDrag;
         private bool _suppressDpiSuggestedRect;
+        private NativeMethods.MonitorDisplayInfo[] _dragMonitors;
+        private uint _dpiTransitionTargetDpi;
+        private bool _hasDpiTransitionWork;
+        private NativeMethods.RECT _dpiTransitionTargetWork;
+        private Rectangle _initialPhysicalBounds;
+        private uint _initialDpi;
+        private NativeMethods.RECT _initialWorkArea;
+        private bool _hasInitialPhysicalBounds;
         private NativeMethods.RECT _externalBeforeRect;
+        private uint _externalBeforeDpi;
         private DateTime _postUserResizeGuardUntilUtc = DateTime.MinValue;
         private int? _preDrawerNudgeTopY;
         private bool _lastIdleOpen;
@@ -435,6 +539,36 @@ namespace AgyFlowPilot
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            if (_hasInitialPhysicalBounds)
+            {
+                NativeMethods.RECT actualRect;
+                if (NativeMethods.GetWindowRect(this.Handle, out actualRect)
+                    && (actualRect.Left != _initialPhysicalBounds.X
+                        || actualRect.Top != _initialPhysicalBounds.Y
+                        || actualRect.Width != _initialPhysicalBounds.Width
+                        || actualRect.Height != _initialPhysicalBounds.Height))
+                {
+                    _suppressDpiSuggestedRect = true;
+                    _dpiTransitionTargetDpi = _initialDpi;
+                    _dpiTransitionTargetWork = _initialWorkArea;
+                    _hasDpiTransitionWork = true;
+                    try
+                    {
+                        NativeMethods.SetWindowPos(
+                            this.Handle,
+                            _alwaysOnTop ? NativeMethods.HWND_TOPMOST : IntPtr.Zero,
+                            _initialPhysicalBounds.X, _initialPhysicalBounds.Y,
+                            _initialPhysicalBounds.Width, _initialPhysicalBounds.Height,
+                            (_alwaysOnTop ? 0u : NativeMethods.SWP_NOZORDER) | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                    }
+                    finally
+                    {
+                        _hasDpiTransitionWork = false;
+                        _dpiTransitionTargetDpi = 0;
+                        _suppressDpiSuggestedRect = false;
+                    }
+                }
+            }
             _currentDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
             ApplyRegionClipIfNeeded(this.Width, this.Height);
             ApplyTopMostNative(_alwaysOnTop);
@@ -555,50 +689,29 @@ namespace AgyFlowPilot
             _suppressDpiSuggestedRect = true;
             try
             {
-                uint primaryDpi;
-                NativeMethods.RECT primaryWork = NativeMethods.GetPrimaryWorkArea(out primaryDpi);
-                _currentDpi = primaryDpi;
+                NativeMethods.MonitorDisplayInfo[] monitors = NativeMethods.GetAllMonitors();
+                NativeMethods.MonitorDisplayInfo cursorOrPrimary = NativeMethods.GetCursorOrPrimaryMonitorInfo();
 
-                if (_opts.InitialLogicalX.HasValue && _opts.InitialLogicalY.HasValue
-                    && IsValidLogicalCoord(_opts.InitialLogicalX.Value)
-                    && IsValidLogicalCoord(_opts.InitialLogicalY.Value))
-                {
-                    double baseScale = primaryDpi / 96.0;
-                    NativeMethods.POINT pt = new NativeMethods.POINT
-                    {
-                        X = (int)Math.Round(_opts.InitialLogicalX.Value * baseScale),
-                        Y = (int)Math.Round(_opts.InitialLogicalY.Value * baseScale)
-                    };
-                    IntPtr hMon = NativeMethods.MonitorFromPoint(pt, NativeMethods.MONITOR_DEFAULTTONEAREST);
-                    uint monDpi = NativeMethods.GetSafeDpiForMonitor(hMon);
-                    _currentDpi = monDpi;
-                    double scale = monDpi / 96.0;
+                int physX, physY, physW, physH;
+                uint targetDpi;
+                NativeMethods.RECT targetWork;
+                string anchor;
+                bool usedSaved;
+                ResolveInitialPhysicalBounds(
+                    _opts.InitialPhysicalX, _opts.InitialPhysicalY,
+                    _opts.InitialLogicalX, _opts.InitialLogicalY,
+                    _logicalWidth, _logicalHeight,
+                    monitors, cursorOrPrimary,
+                    out physX, out physY, out physW, out physH,
+                    out targetDpi, out targetWork, out anchor, out usedSaved);
 
-                    int physW = Math.Max(64, (int)Math.Ceiling(_logicalWidth * scale - 1e-6));
-                    int physH = Math.Max(24, (int)Math.Ceiling(_logicalHeight * scale - 1e-6));
-                    int physX = (int)Math.Round(_opts.InitialLogicalX.Value * scale);
-                    int physY = (int)Math.Round(_opts.InitialLogicalY.Value * scale);
-
-                    NativeMethods.RECT work = NativeMethods.GetWorkAreaForPoint(physX + physW / 2, physY + physH / 2);
-                    ClampRectToWorkArea(ref physX, ref physY, ref physW, ref physH, work);
-                    _anchorCorner = InferNearestAnchor(physX, physY, physW, physH, work, monDpi);
-                    this.Bounds = new Rectangle(physX, physY, physW, physH);
-                }
-                else
-                {
-                    uint targetDpi;
-                    NativeMethods.RECT targetWork = NativeMethods.GetCursorOrPrimaryWorkArea(out targetDpi);
-                    _currentDpi = targetDpi;
-                    double scale = targetDpi / 96.0;
-                    int margin = (int)Math.Round(16 * scale);
-                    int physW = Math.Max(64, (int)Math.Ceiling(_logicalWidth * scale - 1e-6));
-                    int physH = Math.Max(24, (int)Math.Ceiling(_logicalHeight * scale - 1e-6));
-                    int physX = targetWork.Right - physW - margin;
-                    int physY = targetWork.Top + margin;
-                    ClampRectToWorkArea(ref physX, ref physY, ref physW, ref physH, targetWork);
-                    _anchorCorner = "top-right";
-                    this.Bounds = new Rectangle(physX, physY, physW, physH);
-                }
+                _currentDpi = targetDpi;
+                _anchorCorner = anchor;
+                _initialDpi = targetDpi;
+                _initialWorkArea = targetWork;
+                _initialPhysicalBounds = new Rectangle(physX, physY, physW, physH);
+                _hasInitialPhysicalBounds = true;
+                this.Bounds = _initialPhysicalBounds;
             }
             finally
             {
@@ -946,39 +1059,157 @@ namespace AgyFlowPilot
             if (IsDisposed || !IsHandleCreated || _closingFlag != 0 || _inInteractiveMove || _inInteractiveResize) return;
             NativeMethods.RECT beforeRect;
             NativeMethods.GetWindowRect(this.Handle, out beforeRect);
+            uint beforeDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
 
+            _dragMonitors = NativeMethods.GetAllMonitors();
+            _dpiChangedInDrag = false;
             _inInteractiveMove = true;
             try
             {
                 NativeMethods.ReleaseCapture();
                 NativeMethods.SendMessage(this.Handle, NativeMethods.WM_NCLBUTTONDOWN, new IntPtr(NativeMethods.HTCAPTION), IntPtr.Zero);
             }
-            finally { _inInteractiveMove = false; }
+            finally
+            {
+                _inInteractiveMove = false;
+                _dragMonitors = null;
+            }
 
-            if (IsDisposed || !IsHandleCreated || _closingFlag != 0) return;
+            if (IsDisposed || !IsHandleCreated || _closingFlag != 0)
+            {
+                _dpiChangedInDrag = false;
+                return;
+            }
+            FinalizeDragPlacement(beforeRect, beforeDpi, true);
+        }
+
+        private void FinalizeDragPlacement(NativeMethods.RECT beforeRect, uint beforeDpi, bool useCursorTarget)
+        {
+            bool sawDpiChangeInDrag = _dpiChangedInDrag;
+            _dpiChangedInDrag = false;
+
             NativeMethods.RECT afterRect;
             if (!NativeMethods.GetWindowRect(this.Handle, out afterRect)) return;
 
-            int physX = afterRect.Left, physY = afterRect.Top, physW = afterRect.Width, physH = afterRect.Height;
-            NativeMethods.RECT work = NativeMethods.GetWorkAreaForWindow(this.Handle);
-            int clampedX = physX, clampedY = physY;
-            ClampPositionOnly(ref clampedX, ref clampedY, physW, physH, work);
-            if (clampedX != physX || clampedY != physY)
+            NativeMethods.MonitorDisplayInfo[] monitors = NativeMethods.GetAllMonitors();
+            NativeMethods.POINT curPt = new NativeMethods.POINT();
+            bool hasCur = useCursorTarget && NativeMethods.GetCursorPos(out curPt);
+            int targetIdx = ResolveDropTargetMonitorIndex(afterRect, monitors, hasCur, curPt);
+            NativeMethods.MonitorDisplayInfo targetMon = (targetIdx >= 0 && targetIdx < monitors.Length)
+                ? monitors[targetIdx]
+                : NativeMethods.GetCursorOrPrimaryMonitorInfo();
+
+            uint liveDpiBefore = NativeMethods.GetSafeDpiForWindow(this.Handle);
+            uint targetDpi = targetMon.Dpi >= 72 ? targetMon.Dpi : liveDpiBefore;
+            NativeMethods.RECT work = targetMon.WorkRect;
+
+            int physX, physY, physW, physH;
+            bool dpiChangedDuringDrag;
+            ComputeSettledDragRect(
+                beforeRect, afterRect,
+                beforeDpi, _currentDpi, liveDpiBefore, targetDpi, sawDpiChangeInDrag,
+                _logicalWidth, _logicalHeight, work, hasCur, curPt,
+                out physX, out physY, out physW, out physH, out dpiChangedDuringDrag);
+
+            if (physX != afterRect.Left || physY != afterRect.Top || physW != afterRect.Width || physH != afterRect.Height)
             {
-                physX = clampedX;
-                physY = clampedY;
-                NativeMethods.SetWindowPos(
-                    this.Handle, IntPtr.Zero, physX, physY, physW, physH,
-                    NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                _suppressDpiSuggestedRect = true;
+                _dpiTransitionTargetDpi = targetDpi;
+                _dpiTransitionTargetWork = work;
+                _hasDpiTransitionWork = true;
+                try
+                {
+                    ApplyRegionClipIfNeeded(physW, physH);
+                    NativeMethods.SetWindowPos(
+                        this.Handle, IntPtr.Zero, physX, physY, physW, physH,
+                        NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                }
+                finally
+                {
+                    _hasDpiTransitionWork = false;
+                    _dpiTransitionTargetDpi = 0;
+                    _suppressDpiSuggestedRect = false;
+                }
+                SyncControllerBounds(physW, physH);
+            }
+            else if (dpiChangedDuringDrag)
+            {
+                ApplyRegionClipIfNeeded(physW, physH);
+                SyncControllerBounds(physW, physH);
             }
 
-            if (Math.Abs(physX - beforeRect.Left) >= 1 || Math.Abs(physY - beforeRect.Top) >= 1)
+            if (Math.Abs(physX - beforeRect.Left) >= 1
+                || Math.Abs(physY - beforeRect.Top) >= 1
+                || physW != beforeRect.Width
+                || physH != beforeRect.Height
+                || dpiChangedDuringDrag)
             {
                 _preDrawerNudgeTopY = null;
-                _currentDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
+                uint liveDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
+                _currentDpi = (targetDpi >= 72) ? targetDpi : liveDpi;
                 _anchorCorner = InferNearestAnchor(physX, physY, physW, physH, work, _currentDpi);
-                EmitMovedEvent(physX, physY, _currentDpi, _anchorCorner);
+                EmitMovedEvent(physX, physY, _currentDpi, work, _anchorCorner);
             }
+            else
+            {
+                EmitWorkAreaIfChanged(false);
+            }
+        }
+
+        internal static void ComputeSettledDragRect(
+            NativeMethods.RECT beforeRect,
+            NativeMethods.RECT afterRect,
+            uint beforeDpi,
+            uint currentDpi,
+            uint liveDpiBefore,
+            uint targetDpi,
+            bool sawDpiChangeInDrag,
+            int logicalWidth,
+            int logicalHeight,
+            NativeMethods.RECT targetWork,
+            bool hasCursor,
+            NativeMethods.POINT cursorPt,
+            out int outX,
+            out int outY,
+            out int outW,
+            out int outH,
+            out bool didReconcileDpi)
+        {
+            int physX = afterRect.Left, physY = afterRect.Top, physW = afterRect.Width, physH = afterRect.Height;
+            uint safeTargetDpi = targetDpi >= 72 ? targetDpi : 96u;
+            double targetScale = safeTargetDpi / 96.0;
+            didReconcileDpi = sawDpiChangeInDrag
+                || (safeTargetDpi != beforeDpi)
+                || (safeTargetDpi != currentDpi)
+                || (safeTargetDpi != liveDpiBefore)
+                || (afterRect.Width != beforeRect.Width)
+                || (afterRect.Height != beforeRect.Height);
+
+            if (didReconcileDpi)
+            {
+                int expectedW = Math.Max(64, (int)Math.Ceiling(logicalWidth * targetScale - 1e-6));
+                int expectedH = Math.Max(24, (int)Math.Ceiling(logicalHeight * targetScale - 1e-6));
+                if (physW != expectedW)
+                {
+                    if (hasCursor && cursorPt.X >= physX && cursorPt.X <= physX + physW && physW > 0)
+                    {
+                        double ratio = (cursorPt.X - physX) / (double)physW;
+                        physX = cursorPt.X - (int)Math.Round(ratio * expectedW);
+                    }
+                    else
+                    {
+                        physX += (physW - expectedW) / 2;
+                    }
+                    physW = expectedW;
+                }
+                physH = expectedH;
+            }
+
+            ClampRectToWorkArea(ref physX, ref physY, ref physW, ref physH, targetWork);
+            outX = physX;
+            outY = physY;
+            outW = physW;
+            outH = physH;
         }
 
         private void PerformNativeResize(int htCode, string edge)
@@ -1037,10 +1268,23 @@ namespace AgyFlowPilot
 
             if (physX != afterRect.Left || physY != afterRect.Top || physW != afterRect.Width || physH != afterRect.Height)
             {
-                ApplyRegionClipIfNeeded(physW, physH);
-                NativeMethods.SetWindowPos(
-                    this.Handle, IntPtr.Zero, physX, physY, physW, physH,
-                    NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                _suppressDpiSuggestedRect = true;
+                _dpiTransitionTargetDpi = _currentDpi;
+                _dpiTransitionTargetWork = work;
+                _hasDpiTransitionWork = true;
+                try
+                {
+                    ApplyRegionClipIfNeeded(physW, physH);
+                    NativeMethods.SetWindowPos(
+                        this.Handle, IntPtr.Zero, physX, physY, physW, physH,
+                        NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                }
+                finally
+                {
+                    _hasDpiTransitionWork = false;
+                    _dpiTransitionTargetDpi = 0;
+                    _suppressDpiSuggestedRect = false;
+                }
             }
             else if (_useRegionFallback)
             {
@@ -1123,10 +1367,23 @@ namespace AgyFlowPilot
                 return;
             }
 
-            ApplyRegionClipIfNeeded(newW, newH);
-            NativeMethods.SetWindowPos(
-                this.Handle, IntPtr.Zero, newX, newY, newW, newH,
-                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+            _suppressDpiSuggestedRect = true;
+            _dpiTransitionTargetDpi = _currentDpi;
+            _dpiTransitionTargetWork = work;
+            _hasDpiTransitionWork = true;
+            try
+            {
+                ApplyRegionClipIfNeeded(newW, newH);
+                NativeMethods.SetWindowPos(
+                    this.Handle, IntPtr.Zero, newX, newY, newW, newH,
+                    NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+            }
+            finally
+            {
+                _hasDpiTransitionWork = false;
+                _dpiTransitionTargetDpi = 0;
+                _suppressDpiSuggestedRect = false;
+            }
             SyncControllerBounds(newW, newH);
             EmitWorkAreaIfChanged(false);
         }
@@ -1249,6 +1506,9 @@ namespace AgyFlowPilot
             _anchorCorner = "top-right";
             ApplyRegionClipIfNeeded(physW, physH);
             _suppressDpiSuggestedRect = true;
+            _dpiTransitionTargetDpi = targetDpi;
+            _dpiTransitionTargetWork = targetWork;
+            _hasDpiTransitionWork = true;
             try
             {
                 NativeMethods.SetWindowPos(
@@ -1258,11 +1518,13 @@ namespace AgyFlowPilot
             }
             finally
             {
+                _hasDpiTransitionWork = false;
+                _dpiTransitionTargetDpi = 0;
                 _suppressDpiSuggestedRect = false;
             }
 
             SyncControllerBounds(physW, physH);
-            EmitMovedEvent(physX, physY, targetDpi, _anchorCorner);
+            EmitMovedEvent(physX, physY, targetDpi, targetWork, _anchorCorner);
         }
 
         private NativeMethods.RECT GetCurrentWindowRectSafe()
@@ -1297,6 +1559,8 @@ namespace AgyFlowPilot
             d["workHeight"] = Math.Max(200, workBottom - workTop);
             d["winX"] = (int)Math.Round(physX / scale);
             d["winY"] = (int)Math.Round(physY / scale);
+            d["physX"] = physX;
+            d["physY"] = physY;
             d["physTop"] = physY;
             d["physWorkBottom"] = work.Bottom;
             d["dpi"] = (int)safeDpi;
@@ -1336,7 +1600,11 @@ namespace AgyFlowPilot
 
         private void EmitMovedEvent(int physX, int physY, uint dpi, string anchor)
         {
-            NativeMethods.RECT work = GetSafeWindowWorkArea();
+            EmitMovedEvent(physX, physY, dpi, GetSafeWindowWorkArea(), anchor);
+        }
+
+        private void EmitMovedEvent(int physX, int physY, uint dpi, NativeMethods.RECT work, string anchor)
+        {
             uint safeDpi = dpi >= 72 ? dpi : 96u;
             _lastEmittedWorkAreaSig = FormatWorkAreaSig(work, physY, safeDpi);
 
@@ -1344,6 +1612,8 @@ namespace AgyFlowPilot
             dict["event"] = "moved";
             dict["x"] = dict["winX"];
             dict["y"] = dict["winY"];
+            dict["physX"] = physX;
+            dict["physY"] = physY;
             dict["anchorCorner"] = anchor ?? "top-right";
             PostJsonToWeb(_json.Serialize(dict));
         }
@@ -1433,25 +1703,66 @@ namespace AgyFlowPilot
         private void ApplyMinMaxInfo(ref Message m)
         {
             if (m.LParam == IntPtr.Zero) return;
-            uint dpi = (IsHandleCreated && this.Handle != IntPtr.Zero)
-                ? (_currentDpi = NativeMethods.GetSafeDpiForWindow(this.Handle))
-                : (_currentDpi >= 72 ? _currentDpi : NativeMethods.GetSafeSystemDpi());
+            uint dpi;
+            if (_dpiTransitionTargetDpi >= 72 && _dpiTransitionTargetDpi <= 576)
+            {
+                dpi = _dpiTransitionTargetDpi;
+            }
+            else if (!IsHandleCreated && _initialDpi >= 72 && _initialDpi <= 576)
+            {
+                dpi = _initialDpi;
+            }
+            else if (IsHandleCreated && this.Handle != IntPtr.Zero)
+            {
+                dpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
+                _currentDpi = dpi;
+            }
+            else
+            {
+                dpi = (_currentDpi >= 72 ? _currentDpi : NativeMethods.GetSafeSystemDpi());
+            }
             double scale = dpi / 96.0;
-            NativeMethods.RECT work = GetSafeWindowWorkArea();
+            NativeMethods.RECT work;
+            if (_hasDpiTransitionWork && _dpiTransitionTargetWork.Width > 0 && _dpiTransitionTargetWork.Height > 0)
+            {
+                work = _dpiTransitionTargetWork;
+            }
+            else if (!IsHandleCreated && _hasInitialPhysicalBounds && _initialWorkArea.Width > 0 && _initialWorkArea.Height > 0)
+            {
+                work = _initialWorkArea;
+            }
+            else
+            {
+                work = GetSafeWindowWorkArea();
+            }
+
+            int maxWorkW = work.Width > 0 ? work.Width : (int)Math.Round(3840 * scale);
+            int maxWorkH = work.Height > BottomWorkMarginPhys * 4
+                ? (work.Height - BottomWorkMarginPhys)
+                : (work.Height > 0 ? work.Height : (int)Math.Round(2160 * scale));
+
+            if ((_inInteractiveMove || _inExternalSizeMove) && _dragMonitors != null && _dragMonitors.Length > 1)
+            {
+                for (int i = 0; i < _dragMonitors.Length; i++)
+                {
+                    NativeMethods.RECT mw = _dragMonitors[i].WorkRect;
+                    if (mw.Width > maxWorkW) maxWorkW = mw.Width;
+                    int mh = (mw.Height > BottomWorkMarginPhys * 4) ? (mw.Height - BottomWorkMarginPhys) : mw.Height;
+                    if (mh > maxWorkH) maxWorkH = mh;
+                }
+            }
 
             int minPhysW = Math.Max(64, (int)Math.Round(((_viewMode == "pill") ? MinPillLogicalWidth : MinStackLogicalWidth) * scale));
             int minPhysH = (_viewMode == "pill")
                 ? Math.Max(24, (int)Math.Round(MinPillLogicalHeight * scale))
                 : Math.Max(48, (int)Math.Round(MinStackLogicalHeight * scale));
-            int maxPhysW = work.Width > 0 ? work.Width : (int)Math.Round(3840 * scale);
+            int maxPhysW = maxWorkW;
             if (_viewMode == "pill")
             {
                 int pillMaxPhysW = Math.Max(minPhysW, (int)Math.Round(960 * scale));
                 if (maxPhysW > pillMaxPhysW) maxPhysW = pillMaxPhysW;
             }
-            int maxPhysH = work.Height > BottomWorkMarginPhys * 4
-                ? (work.Height - BottomWorkMarginPhys)
-                : (work.Height > 0 ? work.Height : (int)Math.Round(2160 * scale));
+            int maxPhysH = maxWorkH;
 
             if (minPhysW > maxPhysW) minPhysW = maxPhysW;
             if (minPhysH > maxPhysH) minPhysH = maxPhysH;
@@ -1488,6 +1799,11 @@ namespace AgyFlowPilot
         internal static bool IsValidLogicalCoord(int v)
         {
             return v > -10000 && v < 30000;
+        }
+
+        internal static bool IsValidPhysicalCoord(int v)
+        {
+            return v > -16000 && v < 32768;
         }
 
         internal static bool IsRectInvalidOrMinimized(int x, int y, int w, int h)
@@ -1587,7 +1903,10 @@ namespace AgyFlowPilot
                 bool hasRect = NativeMethods.GetWindowRect(this.Handle, out curRect);
                 uint primaryDpi;
                 NativeMethods.RECT primaryWork = NativeMethods.GetPrimaryWorkArea(out primaryDpi);
-                NativeMethods.RECT winWork = NativeMethods.GetWorkAreaForWindow(this.Handle);
+                IntPtr hWinMon = NativeMethods.MonitorFromWindow(this.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST);
+                NativeMethods.MonitorDisplayInfo winMonInfo;
+                bool hasWinMon = NativeMethods.TryGetMonitorDisplayInfo(hWinMon, out winMonInfo);
+                NativeMethods.RECT winWork = hasWinMon ? winMonInfo.WorkRect : NativeMethods.GetWorkAreaForWindow(this.Handle);
 
                 int newX, newY, newW, newH;
                 bool usedFallback;
@@ -1596,11 +1915,22 @@ namespace AgyFlowPilot
                     _logicalWidth, _logicalHeight,
                     out newX, out newY, out newW, out newH, out usedFallback);
 
+                uint targetDpi = usedFallback ? primaryDpi : (hasWinMon && winMonInfo.Dpi >= 72 ? winMonInfo.Dpi : primaryDpi);
+                NativeMethods.RECT targetWork = usedFallback ? primaryWork : ((winWork.Width > 0 && winWork.Height > 0) ? winWork : primaryWork);
+
                 if (usedFallback)
                 {
                     _currentDpi = primaryDpi;
                     _anchorCorner = "top-right";
                     _preDrawerNudgeTopY = null;
+                }
+                else if (hasRect && targetDpi >= 72 && targetDpi != _currentDpi)
+                {
+                    double targetScale = targetDpi / 96.0;
+                    newW = Math.Max(64, (int)Math.Ceiling(_logicalWidth * targetScale - 1e-6));
+                    newH = Math.Max(24, (int)Math.Ceiling(_logicalHeight * targetScale - 1e-6));
+                    ClampRectToWorkArea(ref newX, ref newY, ref newW, ref newH, targetWork);
+                    _currentDpi = targetDpi;
                 }
 
                 ApplyRegionClipIfNeeded(newW, newH);
@@ -1608,11 +1938,24 @@ namespace AgyFlowPilot
                     | NativeMethods.SWP_SHOWWINDOW
                     | NativeMethods.SWP_NOACTIVATE
                     | NativeMethods.SWP_NOOWNERZORDER;
-                NativeMethods.SetWindowPos(
-                    this.Handle,
-                    _alwaysOnTop ? NativeMethods.HWND_TOPMOST : IntPtr.Zero,
-                    newX, newY, newW, newH,
-                    swpFlags);
+                _suppressDpiSuggestedRect = true;
+                _dpiTransitionTargetDpi = targetDpi;
+                _dpiTransitionTargetWork = targetWork;
+                _hasDpiTransitionWork = true;
+                try
+                {
+                    NativeMethods.SetWindowPos(
+                        this.Handle,
+                        _alwaysOnTop ? NativeMethods.HWND_TOPMOST : IntPtr.Zero,
+                        newX, newY, newW, newH,
+                        swpFlags);
+                }
+                finally
+                {
+                    _hasDpiTransitionWork = false;
+                    _dpiTransitionTargetDpi = 0;
+                    _suppressDpiSuggestedRect = false;
+                }
 
                 _currentDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
                 CoreWebView2Controller ctrl = _controller;
@@ -1666,6 +2009,7 @@ namespace AgyFlowPilot
             {
                 uint newDpi = (uint)(((long)m.WParam >> 16) & 0xFFFF);
                 if (newDpi >= 72 && newDpi <= 576) _currentDpi = newDpi;
+                if (_inInteractiveMove || _inExternalSizeMove) _dpiChangedInDrag = true;
                 if (!_suppressDpiSuggestedRect && m.LParam != IntPtr.Zero)
                 {
                     NativeMethods.RECT suggested = (NativeMethods.RECT)Marshal.PtrToStructure(m.LParam, typeof(NativeMethods.RECT));
@@ -1677,15 +2021,33 @@ namespace AgyFlowPilot
                         uint unusedDpi;
                         work = NativeMethods.GetPrimaryWorkArea(out unusedDpi);
                     }
-                    ClampRectToWorkArea(ref x, ref y, ref w, ref h, work);
-                    ApplyRegionClipIfNeeded(w, h);
-                    NativeMethods.SetWindowPos(
-                        this.Handle,
-                        _alwaysOnTop ? NativeMethods.HWND_TOPMOST : IntPtr.Zero,
-                        x, y, w, h,
-                        (_alwaysOnTop ? 0u : NativeMethods.SWP_NOZORDER) | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                    bool inMove = _inInteractiveMove || _inExternalSizeMove;
+                    if (!inMove && !_inInteractiveResize)
+                    {
+                        ClampRectToWorkArea(ref x, ref y, ref w, ref h, work);
+                    }
+                    _dpiTransitionTargetDpi = (newDpi >= 72 && newDpi <= 576) ? newDpi : _currentDpi;
+                    _dpiTransitionTargetWork = work;
+                    _hasDpiTransitionWork = true;
+                    try
+                    {
+                        ApplyRegionClipIfNeeded(w, h);
+                        NativeMethods.SetWindowPos(
+                            this.Handle,
+                            _alwaysOnTop ? NativeMethods.HWND_TOPMOST : IntPtr.Zero,
+                            x, y, w, h,
+                            (_alwaysOnTop ? 0u : NativeMethods.SWP_NOZORDER) | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+                    }
+                    finally
+                    {
+                        _hasDpiTransitionWork = false;
+                        _dpiTransitionTargetDpi = 0;
+                    }
                     SyncControllerBounds(w, h);
-                    EmitWorkAreaIfChanged(true);
+                    if (!inMove && !_inInteractiveResize)
+                    {
+                        EmitWorkAreaIfChanged(true);
+                    }
                 }
                 m.Result = IntPtr.Zero;
                 return;
@@ -1694,13 +2056,24 @@ namespace AgyFlowPilot
             if (m.Msg == NativeMethods.WM_ENTERSIZEMOVE && !_inInteractiveMove && !_inInteractiveResize && IsHandleCreated)
             {
                 _inExternalSizeMove = true;
+                _dpiChangedInDrag = false;
+                _dragMonitors = NativeMethods.GetAllMonitors();
                 NativeMethods.GetWindowRect(this.Handle, out _externalBeforeRect);
+                _externalBeforeDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
             }
 
             if (m.Msg == NativeMethods.WM_MOVING && (_inInteractiveMove || _inExternalSizeMove) && m.LParam != IntPtr.Zero)
             {
                 NativeMethods.RECT r = (NativeMethods.RECT)Marshal.PtrToStructure(m.LParam, typeof(NativeMethods.RECT));
-                ClampMovingRect(ref r, GetSafeWindowWorkArea());
+                NativeMethods.MonitorDisplayInfo[] mons = _dragMonitors;
+                if (mons == null || mons.Length == 0)
+                {
+                    mons = NativeMethods.GetAllMonitors();
+                    _dragMonitors = mons;
+                }
+                NativeMethods.POINT curPt = new NativeMethods.POINT();
+                bool hasCur = _inInteractiveMove && NativeMethods.GetCursorPos(out curPt);
+                ClampMovingRectMultiMonitor(ref r, mons, hasCur, curPt);
                 Marshal.StructureToPtr(r, m.LParam, false);
             }
 
@@ -1722,6 +2095,8 @@ namespace AgyFlowPilot
             }
             else if (m.Msg == NativeMethods.WM_DISPLAYCHANGE)
             {
+                if (_dragMonitors != null && (_inInteractiveMove || _inExternalSizeMove))
+                    _dragMonitors = NativeMethods.GetAllMonitors();
                 if (!IsDisposed && IsHandleCreated && _closingFlag == 0)
                     EnsureVisibleInWorkAreaAndTopMost("display_change");
             }
@@ -1751,24 +2126,10 @@ namespace AgyFlowPilot
             else if (m.Msg == NativeMethods.WM_EXITSIZEMOVE && _inExternalSizeMove)
             {
                 _inExternalSizeMove = false;
+                _dragMonitors = null;
                 if (!IsDisposed && IsHandleCreated && _closingFlag == 0)
                 {
-                    NativeMethods.RECT afterRect;
-                    if (NativeMethods.GetWindowRect(this.Handle, out afterRect))
-                    {
-                        if (Math.Abs(afterRect.Left - _externalBeforeRect.Left) >= 1 || Math.Abs(afterRect.Top - _externalBeforeRect.Top) >= 1)
-                        {
-                            _preDrawerNudgeTopY = null;
-                            _currentDpi = NativeMethods.GetSafeDpiForWindow(this.Handle);
-                            NativeMethods.RECT work = NativeMethods.GetWorkAreaForWindow(this.Handle);
-                            _anchorCorner = InferNearestAnchor(afterRect.Left, afterRect.Top, afterRect.Width, afterRect.Height, work, _currentDpi);
-                            EmitMovedEvent(afterRect.Left, afterRect.Top, _currentDpi, _anchorCorner);
-                        }
-                        else
-                        {
-                            EmitWorkAreaIfChanged(false);
-                        }
-                    }
+                    FinalizeDragPlacement(_externalBeforeRect, _externalBeforeDpi, false);
                 }
             }
         }
@@ -1999,6 +2360,111 @@ namespace AgyFlowPilot
             }
         }
 
+        internal static int GetSafeWorkBottom(NativeMethods.RECT work)
+        {
+            return (work.Height > BottomWorkMarginPhys * 4) ? (work.Bottom - BottomWorkMarginPhys) : work.Bottom;
+        }
+
+        private static bool RangesOverlap(int a0, int a1, int b0, int b1)
+        {
+            return a0 < b1 && b0 < a1;
+        }
+
+        internal static bool RectsIntersect(NativeMethods.RECT a, NativeMethods.RECT b)
+        {
+            return a.Left < b.Right && b.Left < a.Right && a.Top < b.Bottom && b.Top < a.Bottom;
+        }
+
+        internal static bool RectContainsPoint(NativeMethods.RECT r, int x, int y)
+        {
+            return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
+        }
+
+        private static long IntersectionArea(NativeMethods.RECT a, NativeMethods.RECT b)
+        {
+            long ix = Math.Min(a.Right, b.Right) - Math.Max(a.Left, b.Left);
+            long iy = Math.Min(a.Bottom, b.Bottom) - Math.Max(a.Top, b.Top);
+            return (ix > 0 && iy > 0) ? (ix * iy) : 0L;
+        }
+
+        private static long DistanceSqToRect(int x, int y, NativeMethods.RECT r)
+        {
+            long dx = 0;
+            if (x < r.Left) dx = r.Left - x;
+            else if (x > r.Right) dx = x - r.Right;
+            long dy = 0;
+            if (y < r.Top) dy = r.Top - y;
+            else if (y > r.Bottom) dy = y - r.Bottom;
+            return dx * dx + dy * dy;
+        }
+
+        internal static int FindMonitorIndexForPoint(NativeMethods.MonitorDisplayInfo[] monitors, int x, int y, bool requireInside)
+        {
+            if (monitors == null || monitors.Length == 0) return -1;
+            for (int i = 0; i < monitors.Length; i++)
+            {
+                if (RectContainsPoint(monitors[i].MonitorRect, x, y))
+                    return i;
+            }
+            if (requireInside) return -1;
+
+            int bestIdx = 0;
+            long bestDist = long.MaxValue;
+            for (int i = 0; i < monitors.Length; i++)
+            {
+                long d = DistanceSqToRect(x, y, monitors[i].MonitorRect);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        internal static int FindMonitorIndexForRect(NativeMethods.MonitorDisplayInfo[] monitors, NativeMethods.RECT rect, bool requireOverlap)
+        {
+            if (monitors == null || monitors.Length == 0) return -1;
+            int bestIdx = -1;
+            long bestArea = 0;
+            for (int i = 0; i < monitors.Length; i++)
+            {
+                long area = IntersectionArea(rect, monitors[i].MonitorRect);
+                if (area > bestArea)
+                {
+                    bestArea = area;
+                    bestIdx = i;
+                }
+            }
+            if (bestIdx >= 0) return bestIdx;
+            if (requireOverlap) return -1;
+            return FindMonitorIndexForPoint(monitors, rect.Left + rect.Width / 2, rect.Top + rect.Height / 2, false);
+        }
+
+        internal static int ResolveDropTargetMonitorIndex(
+            NativeMethods.RECT rect,
+            NativeMethods.MonitorDisplayInfo[] monitors,
+            bool hasCursor,
+            NativeMethods.POINT cursorPt)
+        {
+            if (monitors == null || monitors.Length == 0) return -1;
+            if (monitors.Length == 1) return 0;
+
+            if (hasCursor)
+            {
+                int curIdx = FindMonitorIndexForPoint(monitors, cursorPt.X, cursorPt.Y, true);
+                if (curIdx >= 0)
+                {
+                    if (RectsIntersect(rect, monitors[curIdx].MonitorRect)
+                        || FindMonitorIndexForRect(monitors, rect, true) < 0)
+                    {
+                        return curIdx;
+                    }
+                }
+            }
+            return FindMonitorIndexForRect(monitors, rect, false);
+        }
+
         internal static void ClampMovingRect(ref NativeMethods.RECT r, NativeMethods.RECT work)
         {
             int w = r.Width, h = r.Height;
@@ -2009,6 +2475,215 @@ namespace AgyFlowPilot
             r.Top = y;
             r.Right = x + w;
             r.Bottom = y + h;
+        }
+
+        internal static void ClampMovingRectMultiMonitor(
+            ref NativeMethods.RECT r,
+            NativeMethods.MonitorDisplayInfo[] monitors,
+            bool hasCursor,
+            NativeMethods.POINT cursorPt)
+        {
+            int w = r.Width, h = r.Height;
+            if (w <= 0 || h <= 0 || monitors == null || monitors.Length == 0) return;
+            if (monitors.Length == 1)
+            {
+                ClampMovingRect(ref r, monitors[0].WorkRect);
+                return;
+            }
+
+            int activeIdx = hasCursor ? FindMonitorIndexForPoint(monitors, cursorPt.X, cursorPt.Y, true) : -1;
+            if (activeIdx < 0) activeIdx = FindMonitorIndexForRect(monitors, r, false);
+            if (activeIdx < 0) activeIdx = 0;
+
+            NativeMethods.MonitorDisplayInfo active = monitors[activeIdx];
+            int minLeft = active.WorkRect.Left;
+            int maxRight = active.WorkRect.Right;
+            int minTop = active.WorkRect.Top;
+            int maxSafeBottom = GetSafeWorkBottom(active.WorkRect);
+
+            for (int i = 0; i < monitors.Length; i++)
+            {
+                if (i == activeIdx) continue;
+                NativeMethods.MonitorDisplayInfo other = monitors[i];
+                bool horizBand = (hasCursor && cursorPt.Y >= other.MonitorRect.Top && cursorPt.Y < other.MonitorRect.Bottom)
+                    || RangesOverlap(r.Top, r.Bottom, other.MonitorRect.Top, other.MonitorRect.Bottom);
+                if (horizBand)
+                {
+                    if (other.MonitorRect.Left < active.MonitorRect.Left)
+                        minLeft = Math.Min(minLeft, other.WorkRect.Left);
+                    if (other.MonitorRect.Right > active.MonitorRect.Right)
+                        maxRight = Math.Max(maxRight, other.WorkRect.Right);
+                }
+
+                bool vertBand = (hasCursor && cursorPt.X >= other.MonitorRect.Left && cursorPt.X < other.MonitorRect.Right)
+                    || RangesOverlap(r.Left, r.Right, other.MonitorRect.Left, other.MonitorRect.Right);
+                if (vertBand)
+                {
+                    if (other.MonitorRect.Top < active.MonitorRect.Top)
+                        minTop = Math.Min(minTop, other.WorkRect.Top);
+                    if (other.MonitorRect.Bottom > active.MonitorRect.Bottom)
+                        maxSafeBottom = Math.Max(maxSafeBottom, GetSafeWorkBottom(other.WorkRect));
+                }
+
+                if (RectsIntersect(r, other.MonitorRect))
+                {
+                    minTop = Math.Min(minTop, other.WorkRect.Top);
+                    maxSafeBottom = Math.Max(maxSafeBottom, GetSafeWorkBottom(other.WorkRect));
+                }
+            }
+
+            int x = r.Left, y = r.Top;
+            if (maxRight > minLeft)
+            {
+                if (x + w > maxRight) x = maxRight - w;
+                if (x < minLeft) x = minLeft;
+            }
+            if (maxSafeBottom > minTop)
+            {
+                if (y + h > maxSafeBottom) y = maxSafeBottom - h;
+                if (y < minTop) y = minTop;
+            }
+            r.Left = x;
+            r.Top = y;
+            r.Right = x + w;
+            r.Bottom = y + h;
+        }
+
+        internal static void ResolveInitialPhysicalBounds(
+            int? initialPhysX, int? initialPhysY,
+            int? initialLogX, int? initialLogY,
+            int logicalWidth, int logicalHeight,
+            NativeMethods.MonitorDisplayInfo[] monitors,
+            NativeMethods.MonitorDisplayInfo cursorOrPrimaryMonitor,
+            out int outX, out int outY, out int outW, out int outH,
+            out uint outDpi, out NativeMethods.RECT outWork, out string outAnchor, out bool usedSavedPosition)
+        {
+            usedSavedPosition = false;
+            NativeMethods.MonitorDisplayInfo[] safeMons = (monitors != null && monitors.Length > 0)
+                ? monitors
+                : new NativeMethods.MonitorDisplayInfo[] { cursorOrPrimaryMonitor };
+
+            NativeMethods.MonitorDisplayInfo primaryMon = cursorOrPrimaryMonitor;
+            for (int i = 0; i < safeMons.Length; i++)
+            {
+                if (safeMons[i].IsPrimary)
+                {
+                    primaryMon = safeMons[i];
+                    break;
+                }
+            }
+            uint primaryDpi = primaryMon.Dpi >= 72 ? primaryMon.Dpi : 96u;
+            double primaryScale = primaryDpi / 96.0;
+
+            if (initialPhysX.HasValue && initialPhysY.HasValue
+                && IsValidPhysicalCoord(initialPhysX.Value)
+                && IsValidPhysicalCoord(initialPhysY.Value))
+            {
+                int px = initialPhysX.Value;
+                int py = initialPhysY.Value;
+                int monIdx = FindMonitorIndexForPoint(safeMons, px, py, true);
+                if (monIdx < 0)
+                {
+                    int probeW = Math.Max(64, (int)Math.Ceiling(logicalWidth * primaryScale - 1e-6));
+                    int probeH = Math.Max(24, (int)Math.Ceiling(logicalHeight * primaryScale - 1e-6));
+                    NativeMethods.RECT probeRect = new NativeMethods.RECT { Left = px, Top = py, Right = px + probeW, Bottom = py + probeH };
+                    monIdx = FindMonitorIndexForRect(safeMons, probeRect, true);
+                }
+                if (monIdx >= 0)
+                {
+                    NativeMethods.MonitorDisplayInfo mon = safeMons[monIdx];
+                    uint monDpi = mon.Dpi >= 72 ? mon.Dpi : 96u;
+                    double scale = monDpi / 96.0;
+                    int physW = Math.Max(64, (int)Math.Ceiling(logicalWidth * scale - 1e-6));
+                    int physH = Math.Max(24, (int)Math.Ceiling(logicalHeight * scale - 1e-6));
+                    int physX = px, physY = py;
+                    ClampRectToWorkArea(ref physX, ref physY, ref physW, ref physH, mon.WorkRect);
+                    outX = physX;
+                    outY = physY;
+                    outW = physW;
+                    outH = physH;
+                    outDpi = monDpi;
+                    outWork = mon.WorkRect;
+                    outAnchor = InferNearestAnchor(physX, physY, physW, physH, mon.WorkRect, monDpi);
+                    usedSavedPosition = true;
+                    return;
+                }
+            }
+            else if (initialLogX.HasValue && initialLogY.HasValue
+                && IsValidLogicalCoord(initialLogX.Value)
+                && IsValidLogicalCoord(initialLogY.Value))
+            {
+                int lx = initialLogX.Value;
+                int ly = initialLogY.Value;
+                int guessX = (int)Math.Round(lx * primaryScale);
+                int guessY = (int)Math.Round(ly * primaryScale);
+                int monIdx = FindMonitorIndexForPoint(safeMons, guessX, guessY, true);
+                if (monIdx < 0)
+                {
+                    for (int i = 0; i < safeMons.Length; i++)
+                    {
+                        uint mDpi = safeMons[i].Dpi >= 72 ? safeMons[i].Dpi : 96u;
+                        double mScale = mDpi / 96.0;
+                        int candX = (int)Math.Round(lx * mScale);
+                        int candY = (int)Math.Round(ly * mScale);
+                        if (RectContainsPoint(safeMons[i].MonitorRect, candX, candY))
+                        {
+                            monIdx = i;
+                            break;
+                        }
+                    }
+                }
+                if (monIdx >= 0)
+                {
+                    NativeMethods.MonitorDisplayInfo mon = safeMons[monIdx];
+                    uint monDpi = mon.Dpi >= 72 ? mon.Dpi : 96u;
+                    double scale = monDpi / 96.0;
+                    int physW = Math.Max(64, (int)Math.Ceiling(logicalWidth * scale - 1e-6));
+                    int physH = Math.Max(24, (int)Math.Ceiling(logicalHeight * scale - 1e-6));
+                    int physX = (int)Math.Round(lx * scale);
+                    int physY = (int)Math.Round(ly * scale);
+                    int exactIdx = FindMonitorIndexForPoint(safeMons, physX + physW / 2, physY + physH / 2, true);
+                    if (exactIdx >= 0 && exactIdx != monIdx)
+                    {
+                        mon = safeMons[exactIdx];
+                        monDpi = mon.Dpi >= 72 ? mon.Dpi : 96u;
+                        scale = monDpi / 96.0;
+                        physW = Math.Max(64, (int)Math.Ceiling(logicalWidth * scale - 1e-6));
+                        physH = Math.Max(24, (int)Math.Ceiling(logicalHeight * scale - 1e-6));
+                    }
+                    ClampRectToWorkArea(ref physX, ref physY, ref physW, ref physH, mon.WorkRect);
+                    outX = physX;
+                    outY = physY;
+                    outW = physW;
+                    outH = physH;
+                    outDpi = monDpi;
+                    outWork = mon.WorkRect;
+                    outAnchor = InferNearestAnchor(physX, physY, physW, physH, mon.WorkRect, monDpi);
+                    usedSavedPosition = true;
+                    return;
+                }
+            }
+
+            uint targetDpi = cursorOrPrimaryMonitor.Dpi >= 72 ? cursorOrPrimaryMonitor.Dpi : primaryDpi;
+            NativeMethods.RECT targetWork = (cursorOrPrimaryMonitor.WorkRect.Width > 0 && cursorOrPrimaryMonitor.WorkRect.Height > 0)
+                ? cursorOrPrimaryMonitor.WorkRect
+                : primaryMon.WorkRect;
+            double fbScale = targetDpi / 96.0;
+            int margin = (int)Math.Round(16 * fbScale);
+            int fbW = Math.Max(64, (int)Math.Ceiling(logicalWidth * fbScale - 1e-6));
+            int fbH = Math.Max(24, (int)Math.Ceiling(logicalHeight * fbScale - 1e-6));
+            int fbX = targetWork.Right - fbW - margin;
+            int fbY = targetWork.Top + margin;
+            ClampRectToWorkArea(ref fbX, ref fbY, ref fbW, ref fbH, targetWork);
+
+            outX = fbX;
+            outY = fbY;
+            outW = fbW;
+            outH = fbH;
+            outDpi = targetDpi;
+            outWork = targetWork;
+            outAnchor = "top-right";
+            usedSavedPosition = false;
         }
 
         internal static string InferNearestAnchor(int x, int y, int w, int h, NativeMethods.RECT work, uint dpi)
@@ -2215,8 +2890,18 @@ namespace AgyFlowPilot
                     case "--parent-pid": case "--ppid": opts.ParentPid = ParseIntArg(args, ref i, inlineVal, opts.ParentPid); break;
                     case "--port": opts.Port = ParseIntArg(args, ref i, inlineVal, opts.Port); break;
                     case "--url": opts.TargetUrl = NextStringArg(args, ref i, inlineVal); break;
-                    case "--x": opts.InitialLogicalX = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialLogicalX); break;
-                    case "--y": opts.InitialLogicalY = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialLogicalY); break;
+                    case "--x":
+                        opts.InitialLogicalX = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialLogicalX);
+                        opts.InitialPhysicalX = null;
+                        opts.InitialPhysicalY = null;
+                        break;
+                    case "--y":
+                        opts.InitialLogicalY = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialLogicalY);
+                        opts.InitialPhysicalX = null;
+                        opts.InitialPhysicalY = null;
+                        break;
+                    case "--phys-x": opts.InitialPhysicalX = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialPhysicalX); break;
+                    case "--phys-y": opts.InitialPhysicalY = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialPhysicalY); break;
                     case "--width": case "--w": opts.InitialLogicalW = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialLogicalW); break;
                     case "--height": case "--h": opts.InitialLogicalH = ParseNullableIntArg(args, ref i, inlineVal, opts.InitialLogicalH); break;
                     case "--view-mode": case "--mode":
@@ -2285,6 +2970,15 @@ namespace AgyFlowPilot
                 {
                     opts.InitialLogicalX = sx;
                     opts.InitialLogicalY = sy;
+                }
+
+                int? px = TryReadCoord(hud, "physX"), py = TryReadCoord(hud, "physY");
+                if (px.HasValue && py.HasValue
+                    && HudForm.IsValidPhysicalCoord(px.Value)
+                    && HudForm.IsValidPhysicalCoord(py.Value))
+                {
+                    opts.InitialPhysicalX = px;
+                    opts.InitialPhysicalY = py;
                 }
             }
             catch { }
@@ -2549,6 +3243,205 @@ namespace AgyFlowPilot
             return true;
         }
 
+        private static bool VerifyMultiMonitorDragAndDpiLogic()
+        {
+            // 1) Mixed-DPI right-secondary topology: Primary 2160x1440 @ 150% + Secondary 1920x1080 @ 100% at X=2160..4080
+            NativeMethods.MonitorDisplayInfo pri150 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = 0, Top = 0, Right = 2160, Bottom = 1440 },
+                WorkRect = new NativeMethods.RECT { Left = 0, Top = 0, Right = 2160, Bottom = 1380 },
+                Dpi = 144,
+                IsPrimary = true
+            };
+            NativeMethods.MonitorDisplayInfo secRight100 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = 2160, Top = 0, Right = 4080, Bottom = 1080 },
+                WorkRect = new NativeMethods.RECT { Left = 2160, Top = 0, Right = 4080, Bottom = 1040 },
+                Dpi = 96,
+                IsPrimary = false
+            };
+            NativeMethods.MonitorDisplayInfo[] rightDual = new NativeMethods.MonitorDisplayInfo[] { pri150, secRight100 };
+
+            // Dragging right across x=2160 seam: zero invisible wall
+            NativeMethods.RECT crossRight = new NativeMethods.RECT { Left = 1950, Top = 100, Right = 2532, Bottom = 154 };
+            HudForm.ClampMovingRectMultiMonitor(ref crossRight, rightDual, true, new NativeMethods.POINT { X = 2150, Y = 120 });
+            if (crossRight.Left != 1950 || crossRight.Right != 2532 || crossRight.Top != 100) return false;
+
+            // Dragging further onto secondary past outer right edge 4080: clamped cleanly to 4080
+            NativeMethods.RECT pastFarRight = new NativeMethods.RECT { Left = 3900, Top = 100, Right = 4288, Bottom = 136 };
+            HudForm.ClampMovingRectMultiMonitor(ref pastFarRight, rightDual, true, new NativeMethods.POINT { X = 4070, Y = 120 });
+            if (pastFarRight.Right != 4080 || pastFarRight.Left != (4080 - 388)) return false;
+
+            // Dragging back left across x=2160 seam from secondary to primary: zero wall
+            NativeMethods.RECT crossBackLeft = new NativeMethods.RECT { Left = 1980, Top = 100, Right = 2368, Bottom = 136 };
+            HudForm.ClampMovingRectMultiMonitor(ref crossBackLeft, rightDual, true, new NativeMethods.POINT { X = 2180, Y = 120 });
+            if (crossBackLeft.Left != 1980 || crossBackLeft.Right != 2368) return false;
+
+            // Dragging in bottom overhang of Primary (y=1200, below Secondary's 1080): does not poke into dead space
+            NativeMethods.RECT overhangDrag = new NativeMethods.RECT { Left = 1900, Top = 1200, Right = 2482, Bottom = 1254 };
+            HudForm.ClampMovingRectMultiMonitor(ref overhangDrag, rightDual, true, new NativeMethods.POINT { X = 2140, Y = 1220 });
+            if (overhangDrag.Right != 2160 || overhangDrag.Left != (2160 - 582)) return false;
+
+            // Tall stack straddling seam at y=850 (Bottom=1250 > secRight100 safeBottom 1034): no sudden vertical lurch while straddling
+            NativeMethods.RECT tallStraddle = new NativeMethods.RECT { Left = 2000, Top = 850, Right = 2388, Bottom = 1250 };
+            HudForm.ClampMovingRectMultiMonitor(ref tallStraddle, rightDual, true, new NativeMethods.POINT { X = 2190, Y = 865 });
+            if (tallStraddle.Top != 850 || tallStraddle.Bottom != 1250) return false;
+
+            // Once wholly inside secondary, tall stack lifts above secondary taskbar safeBottom (1034)
+            NativeMethods.RECT tallInSec = new NativeMethods.RECT { Left = 2200, Top = 850, Right = 2588, Bottom = 1250 };
+            HudForm.ClampMovingRectMultiMonitor(ref tallInSec, rightDual, true, new NativeMethods.POINT { X = 2300, Y = 865 });
+            if (tallInSec.Bottom != (1040 - HudForm.BottomWorkMarginPhys) || tallInSec.Height != 400) return false;
+
+            // Drop target selection: straddling window follows cursor onto secondary monitor (no snap-back to primary)
+            NativeMethods.RECT straddleDrop = new NativeMethods.RECT { Left = 1750, Top = 100, Right = 2332, Bottom = 154 };
+            if (HudForm.ResolveDropTargetMonitorIndex(straddleDrop, rightDual, true, new NativeMethods.POINT { X = 2220, Y = 120 }) != 1) return false;
+            if (HudForm.ResolveDropTargetMonitorIndex(straddleDrop, rightDual, true, new NativeMethods.POINT { X = 2120, Y = 120 }) != 0) return false;
+
+            // 2) Negative-X left-secondary topology: Secondary (-1920..0 @ 100%) + Primary (0..2160 @ 150%)
+            NativeMethods.MonitorDisplayInfo secLeft100 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = -1920, Top = 0, Right = 0, Bottom = 1080 },
+                WorkRect = new NativeMethods.RECT { Left = -1920, Top = 0, Right = 0, Bottom = 1040 },
+                Dpi = 96,
+                IsPrimary = false
+            };
+            NativeMethods.MonitorDisplayInfo[] leftDual = new NativeMethods.MonitorDisplayInfo[] { pri150, secLeft100 };
+
+            NativeMethods.RECT crossNegX = new NativeMethods.RECT { Left = -240, Top = 80, Right = 342, Bottom = 134 };
+            HudForm.ClampMovingRectMultiMonitor(ref crossNegX, leftDual, true, new NativeMethods.POINT { X = -20, Y = 100 });
+            if (crossNegX.Left != -240 || crossNegX.Right != 342) return false;
+
+            NativeMethods.RECT pastNegLeft = new NativeMethods.RECT { Left = -2050, Top = 80, Right = -1662, Bottom = 116 };
+            HudForm.ClampMovingRectMultiMonitor(ref pastNegLeft, leftDual, true, new NativeMethods.POINT { X = -1910, Y = 100 });
+            if (pastNegLeft.Left != -1920 || pastNegLeft.Width != 388) return false;
+
+            // 3) Negative-Y top-secondary topology: Secondary (0..-1080 @ 125%) + Primary (0..1440 @ 150%)
+            NativeMethods.MonitorDisplayInfo secTop125 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = 0, Top = -1080, Right = 1920, Bottom = 0 },
+                WorkRect = new NativeMethods.RECT { Left = 0, Top = -1080, Right = 1920, Bottom = -40 },
+                Dpi = 120,
+                IsPrimary = false
+            };
+            NativeMethods.MonitorDisplayInfo[] topDual = new NativeMethods.MonitorDisplayInfo[] { pri150, secTop125 };
+
+            NativeMethods.RECT crossNegY = new NativeMethods.RECT { Left = 400, Top = -200, Right = 885, Bottom = -155 };
+            HudForm.ClampMovingRectMultiMonitor(ref crossNegY, topDual, true, new NativeMethods.POINT { X = 600, Y = -180 });
+            if (crossNegY.Top != -200 || crossNegY.Bottom != -155) return false;
+
+            NativeMethods.RECT crossDownFromTop = new NativeMethods.RECT { Left = 400, Top = -20, Right = 885, Bottom = 25 };
+            HudForm.ClampMovingRectMultiMonitor(ref crossDownFromTop, topDual, true, new NativeMethods.POINT { X = 600, Y = -5 });
+            if (crossDownFromTop.Top != -20 || crossDownFromTop.Bottom != 25) return false;
+
+            // 4) Bottom-secondary topology: Primary (0..1080 @ 100%) + Secondary (0..1080..2160 @ 100%)
+            NativeMethods.MonitorDisplayInfo pri100 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 },
+                WorkRect = new NativeMethods.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1040 },
+                Dpi = 96,
+                IsPrimary = true
+            };
+            NativeMethods.MonitorDisplayInfo secBottom100 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = 0, Top = 1080, Right = 1920, Bottom = 2160 },
+                WorkRect = new NativeMethods.RECT { Left = 0, Top = 1080, Right = 1920, Bottom = 2120 },
+                Dpi = 96,
+                IsPrimary = false
+            };
+            NativeMethods.MonitorDisplayInfo[] bottomDual = new NativeMethods.MonitorDisplayInfo[] { pri100, secBottom100 };
+
+            NativeMethods.RECT crossBottom = new NativeMethods.RECT { Left = 500, Top = 1060, Right = 888, Bottom = 1096 };
+            HudForm.ClampMovingRectMultiMonitor(ref crossBottom, bottomDual, true, new NativeMethods.POINT { X = 650, Y = 1070 });
+            if (crossBottom.Top != 1060 || crossBottom.Bottom != 1096) return false;
+
+            // 5) Reverse mixed-DPI startup restoration (Primary 100% 0..1920 + Secondary 150% 1920..4080)
+            //    Physical coords (2100, 100) must restore on Secondary @ 150% (width=582), never colliding with Primary 1400!
+            NativeMethods.MonitorDisplayInfo secRight150 = new NativeMethods.MonitorDisplayInfo
+            {
+                MonitorRect = new NativeMethods.RECT { Left = 1920, Top = 0, Right = 4080, Bottom = 1440 },
+                WorkRect = new NativeMethods.RECT { Left = 1920, Top = 0, Right = 4080, Bottom = 1380 },
+                Dpi = 144,
+                IsPrimary = false
+            };
+            NativeMethods.MonitorDisplayInfo[] revMixed = new NativeMethods.MonitorDisplayInfo[] { pri100, secRight150 };
+            int ix, iy, iw, ih;
+            uint idpi;
+            NativeMethods.RECT iwork;
+            string ianchor;
+            bool usedSaved;
+            HudForm.ResolveInitialPhysicalBounds(
+                2100, 100, 1400, 67, 388, 36, revMixed, pri100,
+                out ix, out iy, out iw, out ih, out idpi, out iwork, out ianchor, out usedSaved);
+            if (!usedSaved || ix != 2100 || iy != 100 || iw != 582 || ih != 54 || idpi != 144 || iwork.Left != 1920) return false;
+
+            // 6) Startup restoration on negative-X left monitor & negative-Y top monitor
+            HudForm.ResolveInitialPhysicalBounds(
+                -1200, 80, -1200, 80, 388, 36, leftDual, pri150,
+                out ix, out iy, out iw, out ih, out idpi, out iwork, out ianchor, out usedSaved);
+            if (!usedSaved || ix != -1200 || iy != 80 || iw != 388 || ih != 36 || idpi != 96 || iwork.Left != -1920) return false;
+
+            HudForm.ResolveInitialPhysicalBounds(
+                400, -800, 320, -640, 388, 36, topDual, pri150,
+                out ix, out iy, out iw, out ih, out idpi, out iwork, out ianchor, out usedSaved);
+            if (!usedSaved || ix != 400 || iy != -800 || iw != 485 || ih != 45 || idpi != 120 || iwork.Top != -1080) return false;
+
+            // 7) Legacy logical config restoration on Primary 150% + Secondary 100% (x=3600 would overshoot 4080 if multiplied by 1.5!)
+            HudForm.ResolveInitialPhysicalBounds(
+                null, null, 3600, 20, 388, 36, rightDual, pri150,
+                out ix, out iy, out iw, out ih, out idpi, out iwork, out ianchor, out usedSaved);
+            if (!usedSaved || ix != 3600 || iy != 20 || iw != 388 || ih != 36 || idpi != 96 || iwork.Left != 2160) return false;
+
+            // 8) Disconnected secondary monitor -> falls back cleanly to cursor/primary monitor top-right
+            NativeMethods.MonitorDisplayInfo[] singleOnly = new NativeMethods.MonitorDisplayInfo[] { pri150 };
+            HudForm.ResolveInitialPhysicalBounds(
+                3600, 20, 3600, 20, 388, 36, singleOnly, pri150,
+                out ix, out iy, out iw, out ih, out idpi, out iwork, out ianchor, out usedSaved);
+            if (usedSaved || idpi != 144 || iw != 582 || ih != 54 || ix != (2160 - 582 - 24) || iy != 24 || ianchor != "top-right") return false;
+
+            // 9) Config preload parses physX/physY (including deep negative coords) and rejects minimized sentinel -32000
+            HostOptions physOpts = new HostOptions();
+            ApplyHudConfigFromJson(physOpts, "{\"hud\":{\"x\":-1200,\"y\":80,\"physX\":-12000,\"physY\":-800}}");
+            if (physOpts.InitialPhysicalX != -12000 || physOpts.InitialPhysicalY != -800) return false;
+
+            HostOptions sentinelPhys = new HostOptions();
+            ApplyHudConfigFromJson(sentinelPhys, "{\"hud\":{\"physX\":-32000,\"physY\":-32000}}");
+            if (sentinelPhys.InitialPhysicalX.HasValue || sentinelPhys.InitialPhysicalY.HasValue) return false;
+
+            // 10) Expand/collapse on negative-Y secondary monitor stays inside that monitor's work area
+            NativeMethods.RECT negOld = new NativeMethods.RECT { Left = 400, Top = -900, Right = 885, Bottom = -855 };
+            int? negNudge = null;
+            int negOutY, negReqH = 300;
+            HudForm.ComputeLockedTopVerticalBounds(negOld, secTop125.WorkRect, 1.25, true, false, 85, ref negNudge, out negOutY, ref negReqH);
+            if (negOutY != -900 || negReqH != 300 || (negOutY + negReqH) > HudForm.GetSafeWorkBottom(secTop125.WorkRect)) return false;
+
+            // 11) Legacy mixed-DPI startup near seam (x=1800 on Pri 100% 0..1920 whose center 1994 lands on Sec 150% 1920..4080):
+            //     must recompute physW/physH at Sec's 144 DPI (582x54), not leave 388x36 paired with outDpi=144!
+            HudForm.ResolveInitialPhysicalBounds(
+                null, null, 1800, 100, 388, 36, revMixed, pri100,
+                out ix, out iy, out iw, out ih, out idpi, out iwork, out ianchor, out usedSaved);
+            if (!usedSaved || idpi != 144 || iw != 582 || ih != 54 || ix != 1920 || iy != 100 || iwork.Left != 1920) return false;
+
+            // 12) Round-trip cross-DPI drag (125% -> 100% -> 125%) with +-2px rounding drift must reconcile back to exact 485x45
+            NativeMethods.RECT rtBefore = new NativeMethods.RECT { Left = 400, Top = -900, Right = 885, Bottom = -855 };
+            NativeMethods.RECT rtAfterDrifted = new NativeMethods.RECT { Left = 420, Top = -880, Right = 903, Bottom = -836 };
+            int sxOut, syOut, swOut, shOut;
+            bool didReconcile;
+            HudForm.ComputeSettledDragRect(
+                rtBefore, rtAfterDrifted, 120, 120, 120, 120, true, 388, 36, secTop125.WorkRect,
+                true, new NativeMethods.POINT { X = 660, Y = -860 },
+                out sxOut, out syOut, out swOut, out shOut, out didReconcile);
+            if (!didReconcile || swOut != 485 || shOut != 45 || sxOut < secTop125.WorkRect.Left || (sxOut + swOut) > secTop125.WorkRect.Right) return false;
+
+            // Also test round-trip drift detection even if sawDpiChangeInDrag were false (via width/height mismatch vs beforeRect)
+            HudForm.ComputeSettledDragRect(
+                rtBefore, rtAfterDrifted, 120, 120, 120, 120, false, 388, 36, secTop125.WorkRect,
+                false, new NativeMethods.POINT(),
+                out sxOut, out syOut, out swOut, out shOut, out didReconcile);
+            if (!didReconcile || swOut != 485 || shOut != 45) return false;
+
+            return true;
+        }
+
         private static int RunSelfTest(HostOptions opts)
         {
             try
@@ -2559,6 +3452,8 @@ namespace AgyFlowPilot
                 uint cursorDpi;
                 NativeMethods.RECT cursorWork = NativeMethods.GetCursorOrPrimaryWorkArea(out cursorDpi);
                 bool cursorWorkAreaOk = cursorWork.Width > 0 && cursorWork.Height > 0 && cursorDpi >= 72 && cursorDpi <= 576;
+                NativeMethods.MonitorDisplayInfo[] liveMonitors = NativeMethods.GetAllMonitors();
+                bool liveMonitorsOk = liveMonitors != null && liveMonitors.Length >= 1;
                 bool dwm = NativeMethods.IsDwmActive();
 
                 Dictionary<string, int> edgeMap;
@@ -2569,11 +3464,12 @@ namespace AgyFlowPilot
                 bool closeGuardOk = VerifyCloseGuardLogic();
                 bool workAreaRecoveryOk = VerifyWorkAreaRecoveryLogic();
                 bool loopbackUrlGuardOk = VerifyLoopbackUrlGuardLogic();
+                bool multiMonitorDragOk = VerifyMultiMonitorDragAndDpiLogic();
                 int mmiSize = Marshal.SizeOf(typeof(NativeMethods.MINMAXINFO));
                 bool mmiOk = (mmiSize == 40);
 
                 bool lowMemEnumOk = ((int)CoreWebView2MemoryUsageTargetLevel.Low == 1);
-                bool equalWidthOk = string.Equals(HudForm.HostVersion, "3.8.0", StringComparison.Ordinal)
+                bool equalWidthOk = string.Equals(HudForm.HostVersion, "3.8.1", StringComparison.Ordinal)
                     && (HudForm.DefaultPillLogicalWidth == HudForm.DefaultStackLogicalWidth)
                     && (HudForm.DefaultPillLogicalWidth == 388)
                     && (HudForm.MinPillLogicalWidth == HudForm.MinStackLogicalWidth)
@@ -2632,7 +3528,8 @@ namespace AgyFlowPilot
                 bool allOk = !string.IsNullOrEmpty(wvVer)
                     && mutexOk && secondBlocked && edgeOk && lockTopOk
                     && configPreloadOk && workAreaDpiOk && mmiOk && lowMemEnumOk && equalWidthOk && argsOk
-                    && closeGuardOk && workAreaRecoveryOk && cursorWorkAreaOk && loopbackUrlGuardOk;
+                    && closeGuardOk && workAreaRecoveryOk && cursorWorkAreaOk && loopbackUrlGuardOk
+                    && liveMonitorsOk && multiMonitorDragOk;
 
                 int resolvedStackWidth = (opts.SavedStackWidth.HasValue && opts.SavedStackWidth.Value >= HudForm.MinStackLogicalWidth && opts.SavedStackWidth.Value <= 960)
                     ? opts.SavedStackWidth.Value
@@ -2661,6 +3558,8 @@ namespace AgyFlowPilot
                 info["workAreaRecoveryOk"] = workAreaRecoveryOk;
                 info["loopbackUrlGuardOk"] = loopbackUrlGuardOk;
                 info["cursorWorkAreaOk"] = cursorWorkAreaOk;
+                info["liveMonitorCount"] = liveMonitors != null ? liveMonitors.Length : 0;
+                info["multiMonitorDragOk"] = multiMonitorDragOk;
                 info["equalWidthOk"] = equalWidthOk;
                 info["minMaxInfoSize"] = mmiSize;
                 info["defaultStackWidth"] = HudForm.DefaultStackLogicalWidth;

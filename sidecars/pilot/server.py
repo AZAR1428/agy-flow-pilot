@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.8.0."""
+"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.8.1."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ if str(THIS_DIR) not in sys.path:
 
 from engine import FlowPilotEngine, _stat_mtime_ns  # noqa: E402
 
-APP_VERSION = "3.8.0"
+APP_VERSION = "3.8.1"
 HUD_MUTEX_NAME = "Local\\AgyFlowPilot_DesktopHud_SingleInstance_v2"
 CREATE_NO_WINDOW = 0x08000000
 _FALLBACK_HTML = (
@@ -882,7 +882,7 @@ class _DesktopHudManager:
             return {"ok": True, "action": "flash", "hudWindow": self.get_status()}
 
         if action == "reset_position":
-            cfg_res = self.engine.update_config({"x": None, "y": None, "anchorCorner": "top-right", "width": 388, "customHeight": None})
+            cfg_res = self.engine.update_config({"x": None, "y": None, "physX": None, "physY": None, "anchorCorner": "top-right", "width": 388, "customHeight": None})
             enabled_after = bool((cfg_res.get("config", {}).get("hud") or {}).get("enabled", True))
             self._log_hud_event(
                 "action_reset_position",

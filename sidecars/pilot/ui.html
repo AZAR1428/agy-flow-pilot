@@ -6,7 +6,7 @@
   <link rel="icon" href="data:," />
   <title>Flow Pilot · 实时监控</title>
   <style>
-  /* Flow Pilot v3.8.0 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
+  /* Flow Pilot v3.8.1 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
   :root,
   html[data-theme="light"] {
     color-scheme: light;
@@ -1061,6 +1061,8 @@
     customHeight: null,
     x: null,
     y: null,
+    physX: null,
+    physY: null,
     anchorCorner: "top-right",
     pinnedIds: [],
   };
@@ -1404,18 +1406,24 @@
     }
     const prev = (window.__FP_WORK_AREA__ && typeof window.__FP_WORK_AREA__ === "object") ? window.__FP_WORK_AREA__ : {};
     const prevAvail = prev.availBelowCssPx;
+    const prevDpi = prev.dpi;
     const next = { ...prev };
     for (const k of [
       "workLeft", "workTop", "workRight", "workBottom", "workWidth", "workHeight",
-      "winX", "winY", "physTop", "physWorkBottom", "dpi", "scale", "availBelowCssPx",
+      "winX", "winY", "physX", "physY", "physTop", "physWorkBottom", "dpi", "scale", "availBelowCssPx",
     ]) {
       if (typeof msg[k] === "number" && Number.isFinite(msg[k])) next[k] = msg[k];
     }
     window.__FP_WORK_AREA__ = next;
-    return next.availBelowCssPx !== prevAvail;
+    const dpiChanged = typeof next.dpi === "number" && next.dpi !== prevDpi;
+    if (dpiChanged) {
+      lastSentSize.w = 0;
+    }
+    return next.availBelowCssPx !== prevAvail || dpiChanged;
   }
 
   const isValidHudCoord = (v) => typeof v === "number" && Number.isFinite(v) && v > -10000 && v < 30000;
+  const isValidPhysCoord = (v) => typeof v === "number" && Number.isFinite(v) && v > -16000 && v < 32768;
 
   function handleHostIncomingMessage(rawMsg) {
     let msg = rawMsg;
@@ -1429,24 +1437,32 @@
       syncHostWorkArea(msg);
       if (isValidHudCoord(msg.winX)) hudPrefs.x = Math.round(msg.winX);
       if (isValidHudCoord(msg.winY)) hudPrefs.y = Math.round(msg.winY);
+      if (isValidPhysCoord(msg.physX)) hudPrefs.physX = Math.round(msg.physX);
+      if (isValidPhysCoord(msg.physY)) hudPrefs.physY = Math.round(msg.physY);
       scheduleHudResize();
     } else if (evtName === "moved") {
       const availChanged = syncHostWorkArea(msg);
       const hasValidX = isValidHudCoord(msg.x);
       const hasValidY = isValidHudCoord(msg.y);
+      const hasValidPhysX = isValidPhysCoord(msg.physX);
+      const hasValidPhysY = isValidPhysCoord(msg.physY);
       if (hasValidX) hudPrefs.x = Math.round(msg.x);
       if (hasValidY) hudPrefs.y = Math.round(msg.y);
+      if (hasValidPhysX) hudPrefs.physX = Math.round(msg.physX);
+      if (hasValidPhysY) hudPrefs.physY = Math.round(msg.physY);
       if (typeof msg.anchorCorner === "string" && msg.anchorCorner) hudPrefs.anchorCorner = msg.anchorCorner;
       prefsDirtyUntil = Date.now() + 1600;
       if (hudPrefs.viewMode === "stack" && availChanged) scheduleHudResize();
-      if (hasValidX || hasValidY) {
+      if (hasValidX || hasValidY || hasValidPhysX || hasValidPhysY) {
         if (moveSaveTimer) clearTimeout(moveSaveTimer);
         moveSaveTimer = setTimeout(() => {
           moveSaveTimer = null;
           const patch = { anchorCorner: hudPrefs.anchorCorner };
           if (isValidHudCoord(hudPrefs.x)) patch.x = hudPrefs.x;
           if (isValidHudCoord(hudPrefs.y)) patch.y = hudPrefs.y;
-          if ("x" in patch || "y" in patch) saveHudPrefs(patch);
+          if (isValidPhysCoord(hudPrefs.physX)) patch.physX = hudPrefs.physX;
+          if (isValidPhysCoord(hudPrefs.physY)) patch.physY = hudPrefs.physY;
+          if ("x" in patch || "y" in patch || "physX" in patch || "physY" in patch) saveHudPrefs(patch);
         }, 450);
       }
     } else if (evtName === "resizeCancelled") {
@@ -1464,6 +1480,8 @@
       }
       if (isValidHudCoord(msg.x)) hudPrefs.x = Math.round(msg.x);
       if (isValidHudCoord(msg.y)) hudPrefs.y = Math.round(msg.y);
+      if (isValidPhysCoord(msg.physX)) hudPrefs.physX = Math.round(msg.physX);
+      if (isValidPhysCoord(msg.physY)) hudPrefs.physY = Math.round(msg.physY);
       if (typeof msg.anchorCorner === "string" && msg.anchorCorner) {
         hudPrefs.anchorCorner = msg.anchorCorner.endsWith("left") ? "top-left" : "top-right";
       }
@@ -1511,6 +1529,8 @@
         };
         if (isValidHudCoord(hudPrefs.x)) patch.x = hudPrefs.x;
         if (isValidHudCoord(hudPrefs.y)) patch.y = hudPrefs.y;
+        if (isValidPhysCoord(hudPrefs.physX)) patch.physX = hudPrefs.physX;
+        if (isValidPhysCoord(hudPrefs.physY)) patch.physY = hudPrefs.physY;
         saveHudPrefs(patch);
       }, 360);
     } else if (evtName === "flash") {
@@ -3306,8 +3326,14 @@
       if (typeof src.width === "number" && src.width >= HUD_MIN_WIDTH && src.width <= HUD_MAX_WIDTH) hudPrefs.width = Math.round(src.width);
       if (src.customHeight === null || src.customHeight === 0) hudPrefs.customHeight = null;
       else if (typeof src.customHeight === "number" && src.customHeight >= HUD_STACK_MIN_H && src.customHeight <= HUD_CUSTOM_MAX_H) hudPrefs.customHeight = Math.round(src.customHeight);
-      if (typeof src.x === "number") hudPrefs.x = Math.round(src.x);
-      if (typeof src.y === "number") hudPrefs.y = Math.round(src.y);
+      if (src.x === null) hudPrefs.x = null;
+      else if (isValidHudCoord(src.x)) hudPrefs.x = Math.round(src.x);
+      if (src.y === null) hudPrefs.y = null;
+      else if (isValidHudCoord(src.y)) hudPrefs.y = Math.round(src.y);
+      if (src.physX === null) hudPrefs.physX = null;
+      else if (isValidPhysCoord(src.physX)) hudPrefs.physX = Math.round(src.physX);
+      if (src.physY === null) hudPrefs.physY = null;
+      else if (isValidPhysCoord(src.physY)) hudPrefs.physY = Math.round(src.physY);
       if (typeof src.anchorCorner === "string" && src.anchorCorner) hudPrefs.anchorCorner = src.anchorCorner;
       if (Array.isArray(src.pinnedIds)) hudPrefs.pinnedIds = src.pinnedIds.slice();
     }

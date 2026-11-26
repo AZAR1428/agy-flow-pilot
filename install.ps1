@@ -234,5 +234,5 @@ sc_p.write_text(json.dumps(sc, ensure_ascii=False, indent=2) + '\n', 'utf-8')
 '@ | & $pyExe -S - $destDir $pyExe $globalHooksPath
 if ($LASTEXITCODE -ne 0) { throw "Flow Pilot 配置写入失败 (exit $LASTEXITCODE)" }
 
-Write-Host "[Flow Pilot v3.8.0] 安装完成: $destDir" -ForegroundColor Green
-Write-Host "[Flow Pilot v3.8.0] 已绑定 Python: $pyExe" -ForegroundColor Cyan
+Write-Host "[Flow Pilot v3.8.1] 安装完成: $destDir" -ForegroundColor Green
+Write-Host "[Flow Pilot v3.8.1] 已绑定 Python: $pyExe" -ForegroundColor Cyan

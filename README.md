@@ -1,14 +1,14 @@
-# Flow Pilot (`agy-flow-pilot` v3.8.0)
+# Flow Pilot (`agy-flow-pilot` v3.8.1)
 
 专为 **Google Antigravity** 打造的 **浅色统一胶囊桌面悬浮窗（Unified Capsule Telemetry HUD）+ Fast I/O 零溢盘本地文件引擎 + 断流自愈看门狗** 一体化插件套件。
 
 ---
 
-## 一、架构总览（v3.8.0 · 原生重启恢复协同、Fast I/O 零溢盘 Eager 升级与零 RPC 上下文审计）
+## 一、架构总览（v3.8.1 · 多屏跨显示器自由拖拽与混合 DPI 稳定、Fast I/O 零溢盘 Eager 升级与零 RPC 上下文审计）
 
 ```text
 %USERPROFILE%\.gemini\config\plugins\agy-flow-pilot\
-├── plugin.json                # 插件清单与元信息 (v3.8.0，对齐 sidecar://agy-flow-pilot/pilot/ 自动唤起)
+├── plugin.json                # 插件清单与元信息 (v3.8.1，对齐 sidecar://agy-flow-pilot/pilot/ 自动唤起)
 ├── mcp_config.json            # 注册 fast_io 原生 Python Eager MCP 服务（45 字符工具名，per-tool eager）
 ├── hooks.json                 # SessionStart/PreInvocation 极速微标（无 PreToolUse 工具冷启动开销）
 ├── LICENSE                    # MIT 开源许可证
@@ -37,7 +37,14 @@
 
 ---
 
-## 二、v3.8.0 更新亮点
+## 二、v3.8.1 & v3.8.0 更新亮点
+
+### v3.8.1 修复亮点（多屏跨屏拖拽与混合 DPI 加固）
+1. **彻底解除副屏拖拽边界锁死**：`FlowPilotHost.exe` 在 `WM_MOVING` 期间通过 `EnumDisplayMonitors` 感知全拓扑相邻显示器，仅对虚拟桌面外围边做工作区钳位，彻底移除内接缝隐形墙；支持左/右/上/下任意方向及负坐标副屏流畅跨屏拖拽。
+2. **混合 DPI 跨缝无跳变与尺寸锁定修复**：跨不同缩放比屏幕（如 `150% ↔ 100%`）拖拽期间遵循 Windows PMv2 `WM_DPICHANGED` 建议矩形并隔离 `WM_GETMINMAXINFO` 最小尺寸锁，避免接缝回弹与缩放卡死；拖放落位后精准按目标屏工作区与 DPI 收敛，副屏展开/收起与八方向缩放不再回弹主屏。
+3. **跨屏物理坐标精确持久化与断屏自愈**：新增虚拟桌面物理坐标 `physX`/`physY` 持久化，彻底消除混合 DPI 下逻辑坐标映射冲突；重启精准恢复至原副屏位置，仅当原副屏已拔除时自动回落至当前鼠标所在屏/主屏右上角。
+
+### v3.8.0 更新亮点
 
 1. **Google Antigravity 运行机制适配与竞态消除**：
    - **诚实单按钮中断操作**：移除已废弃的后台转交调用，将 HUD 挂起行中冗余按钮合并为诚实的单按钮 `⏹ 中断步骤`（保留 `⚡ 唤醒` 与后台脚本 `终止后台`）。
