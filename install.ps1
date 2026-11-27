@@ -29,7 +29,7 @@ function Find-RealPython {
         if (-not (Test-Path -LiteralPath $c)) { continue }
         if ((Get-Item -LiteralPath $c).Length -le 0) { continue }
         try {
-            $ok = (& $c -S -c "import sys; print(int(sys.version_info >= (3, 10)))" 2>$null | Select-Object -First 1)
+            $ok = (& $c -S -B -c "import sys; print(int(sys.version_info >= (3, 10)))" 2>$null | Select-Object -First 1)
             if ($ok -and $ok.Trim() -eq '1') { return $c }
         } catch {}
     }
@@ -133,16 +133,17 @@ function Copy-AllowlistedTree {
 $pyExe = Find-RealPython
 if ([System.IO.Path]::GetFullPath($srcDir).TrimEnd('\') -ne [System.IO.Path]::GetFullPath($destDir).TrimEnd('\')) {
     Stop-FlowPilotRuntime -PluginDir $destDir
+    if (Test-Path -LiteralPath $destDir) {
+        Get-ChildItem -LiteralPath $destDir -Directory -Recurse -Filter '__pycache__' -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
     New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 
     $allowFiles = @(
         'plugin.json',
         'mcp_config.json',
-        'hooks.json',
         'LICENSE',
         'THIRD_PARTY_NOTICES.md',
-        'scripts\fast_io_mcp.py',
-        'scripts\hook_entry.py'
+        'scripts\fast_io_mcp.py'
     )
     foreach ($relFile in $allowFiles) {
         $srcFile = Join-Path $srcDir $relFile
@@ -170,22 +171,17 @@ import json, os, pathlib, sys
 dest = pathlib.Path(sys.argv[1])
 py = os.path.realpath(sys.argv[2])
 global_hooks_p = pathlib.Path(sys.argv[3])
-qpy = f'"{py}"' if ' ' in py else py
-hooks_p = dest / 'hooks.json'
-h = json.loads(hooks_p.read_text('utf-8'))
-for grp in h.values():
-    for ev_list in grp.values():
-        for item in ev_list:
-            if 'command' in item:
-                item['command'] = f'{qpy} -S scripts/hook_entry.py'
-hooks_p.write_text(json.dumps(h, ensure_ascii=False, indent=2) + '\n', 'utf-8')
 
-old_gate = dest / 'scripts' / 'fast_pretool_gate.py'
-if old_gate.exists() or old_gate.is_symlink():
-    try:
-        old_gate.unlink()
-    except OSError:
-        pass
+for stale in (
+    dest / 'hooks.json',
+    dest / 'scripts' / 'hook_entry.py',
+    dest / 'scripts' / 'fast_pretool_gate.py',
+):
+    if stale.exists() or stale.is_symlink():
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 if global_hooks_p.is_file():
     try:
@@ -218,7 +214,6 @@ servers['fast_io'] = {
     'command': py,
     'args': ['-S', '-B', '-u', str(dest / 'scripts' / 'fast_io_mcp.py')],
     'tools': {
-        'fast_io_batch_read': {'eager': True},
         'fast_io_grep': {'eager': True},
         'fast_io_glob_tree': {'eager': True},
         'fast_io_outline': {'eager': True},
@@ -231,8 +226,8 @@ sc_p = dest / 'sidecars' / 'pilot' / 'sidecar.json'
 sc = json.loads(sc_p.read_text('utf-8'))
 sc['command'] = py
 sc_p.write_text(json.dumps(sc, ensure_ascii=False, indent=2) + '\n', 'utf-8')
-'@ | & $pyExe -S - $destDir $pyExe $globalHooksPath
+'@ | & $pyExe -S -B - $destDir $pyExe $globalHooksPath
 if ($LASTEXITCODE -ne 0) { throw "Flow Pilot 配置写入失败 (exit $LASTEXITCODE)" }
 
-Write-Host "[Flow Pilot v3.8.3] 安装完成: $destDir" -ForegroundColor Green
-Write-Host "[Flow Pilot v3.8.3] 已绑定 Python: $pyExe" -ForegroundColor Cyan
+Write-Host "[Flow Pilot v3.9.0] 安装完成: $destDir" -ForegroundColor Green
+Write-Host "[Flow Pilot v3.9.0] 已绑定 Python: $pyExe" -ForegroundColor Cyan

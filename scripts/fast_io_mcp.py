@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Zero-dependency lightweight read-only MCP Server for Flow Pilot v3.8.0 (`python -S -B -u` ready)."""
+"""Zero-dependency lightweight read-only MCP Server for Flow Pilot v3.9.0 (`python -S -B -u` ready)."""
 
 from __future__ import annotations
 
-import json
-import os
-import re
 import sys
-import threading
-import time
 
 sys.dont_write_bytecode = True
 
-SERVER_NAME = "fast_io"
-SERVER_VERSION = "3.8.0"
+import atexit
+import json
+import os
+import re
+import threading
+import time
 
-MAX_OUTPUT_BYTES = 8_800          # Hard UTF-8 output cap across ALL 4 tools (zero ~10KB spill)
+SERVER_NAME = "fast_io"
+SERVER_VERSION = "3.9.0"
+
+MAX_OUTPUT_BYTES = 8_800          # Hard UTF-8 output cap across ALL tools (zero ~10KB spill)
 MAX_BATCH_ITEMS = 15
 MAX_OUTLINE_FILES = 30
 MAX_GREP_QUERIES = 15
@@ -50,9 +52,15 @@ DEFAULT_STATS = {
 }
 
 _REGEX_META_CHARS = frozenset("$^.*+?[](){}|\\")
+_INLINE_NO_M_RE = re.compile(r"\(\?[aiLmsux]*-[aiLmsux]*m")
 _STATS_MEM_LOCK = threading.Lock()
+_STATS_BUF_LOCK = threading.Lock()
+_STATS_FLUSH_INTERVAL_SEC = 30.0
+_STATS_FLUSH_BATCH_CALLS = 10
 _DEFER_STATS = False
-_PENDING_STATS: list[tuple[str, dict[str, float | int]]] = []
+_PENDING_STATS: dict[str, dict[str, float | int]] = {}
+_PENDING_STATS_CALLS = 0
+_PENDING_SINCE_MONO = 0.0
 _IO_POOL = None
 _IO_POOL_LOCK = threading.Lock()
 _CFG_CACHE: dict[str, tuple[int, int, dict[str, bool]]] = {}
@@ -177,6 +185,9 @@ def load_fast_io_config(plugin_data: str | None = None) -> dict[str, bool]:
 
 
 def _write_stats_deltas(pdata: str, deltas: dict[str, float | int]) -> None:
+    clean = {k: v for k, v in deltas.items() if k in DEFAULT_STATS and v}
+    if not clean:
+        return
     stats_path = os.path.join(pdata, "fast_io_stats.json")
     lock_path = os.path.join(pdata, ".fast_io_stats.lock")
 
@@ -214,9 +225,8 @@ def _write_stats_deltas(pdata: str, deltas: dict[str, float | int]) -> None:
             except Exception:
                 pass
 
-            for k, dv in deltas.items():
-                if k in DEFAULT_STATS:
-                    cur[k] = round(float(cur[k]) + float(dv), 2) if isinstance(DEFAULT_STATS[k], float) else int(cur[k]) + int(dv)
+            for k, dv in clean.items():
+                cur[k] = round(float(cur[k]) + float(dv), 2) if isinstance(DEFAULT_STATS[k], float) else int(cur[k]) + int(dv)
 
             tmp_path = os.path.join(pdata, f".fast_io_stats.{os.getpid()}.{threading.get_ident()}.tmp")
             with open(tmp_path, "wb") as fh:
@@ -240,27 +250,50 @@ def _write_stats_deltas(pdata: str, deltas: dict[str, float | int]) -> None:
                     pass
 
 
-def flush_pending_stats() -> None:
-    if not _PENDING_STATS:
-        return
-    merged: dict[str, dict[str, float | int]] = {}
-    while _PENDING_STATS:
-        pd, dl = _PENDING_STATS.pop(0)
-        acc = merged.setdefault(pd, {})
-        for k, v in dl.items():
-            acc[k] = round(float(acc.get(k, 0.0)) + float(v), 2) if isinstance(DEFAULT_STATS.get(k), float) else int(acc.get(k, 0)) + int(v)
-    for pd, dl in merged.items():
+def flush_pending_stats(force: bool = True) -> None:
+    global _PENDING_STATS, _PENDING_STATS_CALLS, _PENDING_SINCE_MONO
+    with _STATS_BUF_LOCK:
+        if not _PENDING_STATS:
+            return
+        if not force:
+            elapsed = (time.monotonic() - _PENDING_SINCE_MONO) if _PENDING_SINCE_MONO > 0.0 else 0.0
+            if _PENDING_STATS_CALLS < _STATS_FLUSH_BATCH_CALLS and elapsed < _STATS_FLUSH_INTERVAL_SEC:
+                return
+        snapshot = _PENDING_STATS
+        _PENDING_STATS = {}
+        _PENDING_STATS_CALLS = 0
+        _PENDING_SINCE_MONO = 0.0
+    for pd, dl in snapshot.items():
         _write_stats_deltas(pd, dl)
 
 
 def update_fast_io_stats(plugin_data: str | None = None, **deltas: float | int) -> None:
+    global _PENDING_STATS_CALLS, _PENDING_SINCE_MONO
     if not deltas:
         return
+    clean = {k: v for k, v in deltas.items() if k in DEFAULT_STATS and v}
+    if not clean:
+        return
     pdata = plugin_data or get_plugin_data_dir()
-    if _DEFER_STATS:
-        _PENDING_STATS.append((pdata, deltas))
-    else:
-        _write_stats_deltas(pdata, deltas)
+    should_flush = False
+    with _STATS_BUF_LOCK:
+        acc = _PENDING_STATS.setdefault(pdata, {})
+        for k, v in clean.items():
+            acc[k] = round(float(acc.get(k, 0.0)) + float(v), 2) if isinstance(DEFAULT_STATS[k], float) else int(acc.get(k, 0)) + int(v)
+        _PENDING_STATS_CALLS += 1
+        now = time.monotonic()
+        if _PENDING_SINCE_MONO <= 0.0:
+            _PENDING_SINCE_MONO = now
+        if not _DEFER_STATS and (
+            _PENDING_STATS_CALLS >= _STATS_FLUSH_BATCH_CALLS
+            or (now - _PENDING_SINCE_MONO) >= _STATS_FLUSH_INTERVAL_SEC
+        ):
+            should_flush = True
+    if should_flush:
+        flush_pending_stats(force=True)
+
+
+atexit.register(flush_pending_stats)
 
 
 def check_safe_local_path(raw_path, allow_directory: bool = True) -> tuple[bool, str, str]:
@@ -986,22 +1019,47 @@ def handle_grep(args: dict, plugin_data: str | None = None) -> tuple[str, bool]:
     raw_excl = args.get("exclude_dirs")
     extra_excl = {str(d).strip().lower() for d in raw_excl if isinstance(d, str)} if isinstance(raw_excl, list) else set()
 
-    compiled: list[tuple[str, re.Pattern, str, bool]] = []
+    compiled: list[tuple[str, re.Pattern, re.Pattern, str, bool, bool, bool]] = []
     flags = 0 if case_sensitive else re.IGNORECASE
     for q_str in query_list:
+        raw_pat = q_str if is_regex else re.escape(q_str)
         try:
-            rx = re.compile(q_str if is_regex else re.escape(q_str), flags)
+            rx = re.compile(raw_pat, flags)
         except re.error as exc:
             return f'正则表达式语法错误 ({q_str!r}): {exc}（若需纯字面量搜索请设 is_regex=false）', True
         is_pure_lit = (not is_regex) or (not _REGEX_META_CHARS.intersection(q_str))
         lit_needle = q_str if (is_pure_lit and case_sensitive and "\n" not in q_str and "\r" not in q_str) else ""
-        compiled.append((q_str, rx, lit_needle, is_pure_lit))
+        if lit_needle or is_pure_lit:
+            pre_rx = rx
+            can_prefilter = True
+            needs_lf = False
+            has_lookaround = False
+        else:
+            unsafe_pre = (
+                "\\A" in q_str
+                or "\\Z" in q_str
+                or "(?!" in q_str
+                or "(?<!" in q_str
+                or bool(_INLINE_NO_M_RE.search(q_str))
+            )
+            if unsafe_pre:
+                pre_rx = rx
+                can_prefilter = False
+                needs_lf = False
+                has_lookaround = False
+            else:
+                pre_rx = re.compile(raw_pat, flags | re.MULTILINE)
+                can_prefilter = True
+                needs_lf = "$" in q_str
+                has_lookaround = ("(?=" in q_str) or ("(?<=" in q_str)
+        compiled.append((q_str, rx, pre_rx, lit_needle, can_prefilter, needs_lf, has_lookaround))
 
     files, path_errors = _collect_search_files(targets, include_globs, extra_excl)
     if not files and path_errors:
         return _enforce_hard_cap("搜索路径校验未通过:\n" + "\n".join(f"- {e}" for e in path_errors), MAX_OUTPUT_BYTES), True
 
     per_file_store_cap = min(max_matches, 60)
+    is_files_only = output_mode == "files_only"
 
     def _scan_file(fp: str) -> list[tuple[int, dict]]:
         try:
@@ -1012,26 +1070,66 @@ def handle_grep(args: dict, plugin_data: str | None = None) -> tuple[str, bool]:
             if not text:
                 return []
 
+            out_hits: list[tuple[int, dict]] = []
             candidate_qs: list[int] = []
-            for qi, (_, rx, lit_needle, is_pure_lit) in enumerate(compiled):
+            lf_text: str | None = None
+            has_cr = "\r" in text
+            has_lf = "\n" in text
+            lone_cr = has_cr and not has_lf
+
+            for qi, (_, _rx, pre_rx, lit_needle, can_prefilter, needs_lf, has_lookaround) in enumerate(compiled):
                 if lit_needle:
-                    if lit_needle in text:
+                    pos = text.find(lit_needle)
+                    if pos < 0:
+                        continue
+                    if is_files_only:
+                        first_ln = (text.count("\r", 0, pos) if lone_cr else text.count("\n", 0, pos)) + 1
+                        out_hits.append((qi, {"fp": fp, "total_count": 1, "last_hit_ln": first_ln, "entries": []}))
+                    else:
                         candidate_qs.append(qi)
-                elif is_pure_lit:
-                    if rx.search(text):
+                    continue
+
+                if not can_prefilter:
+                    candidate_qs.append(qi)
+                    continue
+
+                if (needs_lf and has_cr) or lone_cr:
+                    if lf_text is None:
+                        lf_text = text.replace("\r\n", "\n")
+                        if "\r" in lf_text:
+                            lf_text = lf_text.replace("\r", "\n")
+                    scan_text = lf_text
+                else:
+                    scan_text = text
+
+                m = pre_rx.search(scan_text)
+                if m is None:
+                    continue
+
+                if is_files_only:
+                    ms = m.group(0)
+                    if (
+                        "\n" not in ms
+                        and "\r" not in ms
+                        and not has_lookaround
+                        and not (m.start() == len(scan_text) and scan_text.endswith(("\n", "\r")))
+                    ):
+                        first_ln = scan_text.count("\n", 0, m.start()) + 1
+                        out_hits.append((qi, {"fp": fp, "total_count": 1, "last_hit_ln": first_ln, "entries": []}))
+                    else:
                         candidate_qs.append(qi)
                 else:
                     candidate_qs.append(qi)
+
             if not candidate_qs:
-                return []
+                return out_hits
 
             lines = text.splitlines()
-            del text
-            out_hits: list[tuple[int, dict]] = []
+            del text, lf_text
 
             for qi in candidate_qs:
-                _, rx, lit_needle, _ = compiled[qi]
-                if output_mode == "files_only":
+                _, rx, _, lit_needle, _, _, _ = compiled[qi]
+                if is_files_only:
                     first_ln = 0
                     for idx, line in enumerate(lines):
                         if (lit_needle in line) if lit_needle else bool(rx.search(line)):
@@ -1135,7 +1233,8 @@ def handle_grep(args: dict, plugin_data: str | None = None) -> tuple[str, bool]:
     top_hdr = f"{warn_prefix}{drop_note}[{len(compiled)} queries · {grand_hits} matches across {len(files)} files{mode_tag} · {elapsed_ms:.1f}ms]"
     sec_headers: list[str] = []
     q_needs: list[int] = []
-    for qi, (q_str, _, _, _) in enumerate(compiled):
+    for qi, q_entry in enumerate(compiled):
+        q_str = q_entry[0]
         recs = per_query_records[qi]
         q_total = sum(r["total_count"] for r in recs)
         q_disp = q_str if len(q_str) <= 60 else (q_str[:57] + "...")
@@ -1921,6 +2020,14 @@ def _render_outline_file_with_budget(rec: dict, budget: int) -> str:
     return header + "\n" + "\n".join(lines_out)
 
 
+def _read_outline_raw(norm: str) -> tuple[bytes | None, str]:
+    try:
+        with open(norm, "rb") as fh:
+            return fh.read(MAX_GREP_FILE_SIZE), ""
+    except Exception as exc:
+        return None, str(exc)
+
+
 def handle_outline(args: dict, plugin_data: str | None = None) -> tuple[str, bool]:
     raw_paths = _extract_path_list(args)
     if not raw_paths:
@@ -1930,19 +2037,45 @@ def handle_outline(args: dict, plugin_data: str | None = None) -> tuple[str, boo
     trunc_note = f"\n\n[提示：单次最多提取 {MAX_OUTLINE_FILES} 个文件骨架，已忽略其余 {omitted_files} 个]" if omitted_files else ""
     paths = raw_paths[:MAX_OUTLINE_FILES]
 
-    records: list[dict] = []
-    ok_count = 0
+    slots: list[dict] = []
+    valid_indices: list[int] = []
+    total_read_bytes = 0
     for p in paths:
         ok, norm, err = check_safe_local_path(p, allow_directory=False)
         if not ok:
-            records.append({"static": f"=== {p} -> ERROR: {err} ==="})
+            slots.append({"static": f"=== {p} -> ERROR: {err} ==="})
             continue
         if not os.path.isfile(norm):
-            records.append({"static": f"=== {norm} -> ERROR: 文件不存在 ==="})
+            slots.append({"static": f"=== {norm} -> ERROR: 文件不存在 ==="})
             continue
         try:
-            with open(norm, "rb") as fh:
-                raw = fh.read(MAX_GREP_FILE_SIZE)
+            fsize = os.path.getsize(norm)
+        except OSError:
+            fsize = 0
+        valid_indices.append(len(slots))
+        total_read_bytes += min(fsize, MAX_GREP_FILE_SIZE)
+        slots.append({"norm": norm})
+
+    use_pool = len(valid_indices) > 12 or total_read_bytes > MAX_GREP_FILE_SIZE
+    prefetched: dict[int, tuple[bytes | None, str]] = {}
+    if use_pool:
+        pool = _get_io_pool()
+        valid_norms = [slots[idx]["norm"] for idx in valid_indices]
+        for idx, res in zip(valid_indices, pool.map(_read_outline_raw, valid_norms)):
+            prefetched[idx] = res
+
+    records: list[dict] = []
+    ok_count = 0
+    for idx, slot in enumerate(slots):
+        if "static" in slot:
+            records.append(slot)
+            continue
+        norm = slot["norm"]
+        raw, read_err = prefetched.pop(idx) if use_pool else _read_outline_raw(norm)
+        if read_err or raw is None:
+            records.append({"static": f"=== {norm} -> ERROR: {read_err} ==="})
+            continue
+        try:
             text = decode_text_bytes(raw, truncated=(len(raw) == MAX_GREP_FILE_SIZE))
             del raw
             if text is None:
@@ -2020,30 +2153,6 @@ _READONLY_ANNOTATIONS = {
 }
 
 MCP_TOOLS = [
-    {
-        "name": "fast_io_batch_read",
-        "description": "并发读多文件小切片（<=8.8KB 零溢盘，公平分配，支持 'path:s-e'；常规/已知行段用并行 read_file）。",
-        "annotations": dict(_READONLY_ANNOTATIONS),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string"},
-                            "start_line": {"type": "integer"},
-                            "end_line": {"type": "integer"},
-                            "max_lines": {"type": "integer"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-                "paths": {"type": "array", "items": {"type": "string"}, "description": "路径或 'path:s-e' 简写列表。"},
-            },
-        },
-    },
     {
         "name": "fast_io_grep",
         "description": "多查询并发搜代码（<=8.8KB 零溢盘，queries[<=15]、output_mode、每文件首条公平保障，跳过 .gitignore/二进制）。",
@@ -2213,7 +2322,7 @@ def serve_stdio() -> None:
                     resps = [r for item in parsed if isinstance(item, dict) for r in (_dispatch_rpc_request(item),) if r is not None]
                     if resps:
                         write_stdio_frame(stdout, resps, mode)
-                flush_pending_stats()
+                flush_pending_stats(force=False)
             except (BrokenPipeError, EOFError, KeyboardInterrupt):
                 break
             except json.JSONDecodeError as exc:
@@ -2229,7 +2338,7 @@ def serve_stdio() -> None:
                     pass
     finally:
         _DEFER_STATS = False
-        flush_pending_stats()
+        flush_pending_stats(force=True)
 
 
 # --- Lightweight Local CLI Mode (for Swarm workers without MCP mount) ---
@@ -2397,6 +2506,7 @@ def run_cli(argv: list[str]) -> int:
         return 2
 
     text_out, is_err = fn(targs)
+    flush_pending_stats(force=True)
     text_out = _enforce_hard_cap(text_out, MAX_OUTPUT_BYTES)
     out_stream = sys.stderr.buffer if is_err else sys.stdout.buffer
     out_stream.write((text_out + "\n").encode("utf-8", errors="replace"))

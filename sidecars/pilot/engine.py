@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight multi-task stream telemetry & on-demand error diagnosis for Flow Pilot v3.8.3."""
+"""Ultra-lightweight multi-task stream telemetry & on-demand error diagnosis for Flow Pilot v3.9.0."""
 
 from __future__ import annotations
+
+import sys
+
+sys.dont_write_bytecode = True
 
 import ctypes
 import datetime
@@ -16,16 +20,11 @@ import re
 import socket
 import sqlite3
 import struct
-import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
-from typing import Any, Optional
-
-sys.dont_write_bytecode = True
+from typing import Any, Callable, Optional
 
 SAFE_CID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 INTENTIONAL_WAIT_TOOLS = frozenset({
@@ -66,7 +65,7 @@ SPEED_PHASE_LABELS: dict[str, str] = {
 }
 
 DEFAULT_HUD_CONFIG: dict[str, Any] = {
-    "enabled": True, "viewMode": "pill", "alwaysOnTop": True,
+    "enabled": False, "viewMode": "pill", "alwaysOnTop": True,
     "opacity": 0.96, "theme": "light", "width": 388, "customHeight": None,
     "x": None, "y": None, "physX": None, "physY": None, "anchorCorner": "top-right", "pinnedIds": [],
 }
@@ -76,8 +75,6 @@ DEFAULT_FAST_IO_STATS: dict[str, Any] = {
     "batchReadCalls": 0, "batchReadFiles": 0, "grepCalls": 0, "globCalls": 0,
     "outlineCalls": 0, "savedSecEstimate": 0.0,
 }
-
-FALLBACK_MODEL_LABELS: dict[str, str] = {}
 
 _CJK_RE = re.compile(r"[\u2e80-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]")
 _PAREN_NAME_RE = re.compile(r"\(([^()]+)\)\s*$")
@@ -167,37 +164,6 @@ def _query_parent_ls_start_ts() -> float:
             k32.CloseHandle(h)
     except Exception:
         return 0.0
-
-
-def _is_pid_alive_fast(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name != "nt":
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-    try:
-        from ctypes import wintypes
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        k32.OpenProcess.restype = wintypes.HANDLE
-        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        k32.WaitForSingleObject.restype = wintypes.DWORD
-        k32.CloseHandle.argtypes = [wintypes.HANDLE]
-        k32.CloseHandle.restype = wintypes.BOOL
-
-        h = k32.OpenProcess(0x00100000 | 0x1000, False, pid)
-        if not h:
-            return int(ctypes.get_last_error()) == 5
-        try:
-            return k32.WaitForSingleObject(h, 0) != 0
-        finally:
-            k32.CloseHandle(h)
-    except Exception:
-        return False
 
 
 def _scandir_files_sig(dir_str: str, limit: int = 96) -> int:
@@ -297,12 +263,7 @@ def _infer_model_max_tokens(model_str: str, live_max_tokens: Optional[dict[str, 
         for cand in (s, s.upper()):
             if (live_val := live_max_tokens.get(cand)) and live_val > 0:
                 return int(live_val)
-    resolved = FALLBACK_MODEL_LABELS.get(s, FALLBACK_MODEL_LABELS.get(s.upper(), s))
-    if resolved and resolved != s and live_max_tokens:
-        for cand in (resolved, resolved.upper()):
-            if (live_val := live_max_tokens.get(cand)) and live_val > 0:
-                return int(live_val)
-    low = f"{s} {resolved}".lower()
+    low = s.lower()
     if "claude" in low:
         return 200000
     if "gpt" in low:
@@ -974,7 +935,7 @@ class ConversationRuntime:
         "stream_initial_seen", "tok_calibration", "tok_cal_think", "tok_cal_resp",
         "ts_calibrated_once", "ts_cal_think_once", "ts_cal_resp_once", "ts_seen_step_indices",
         "ts_calibrated_step_indices",
-        "ts_waiting_turn_since", "ts_waiting_from_hook", "ts_active_step_idx", "ts_step_created_at", "ts_first_token_at",
+        "ts_waiting_turn_since", "ts_active_step_idx", "ts_step_created_at", "ts_first_token_at",
         "ts_first_chunk_tokens", "ts_last_growth_at", "ts_baseline_at", "ts_baseline_tokens", "ts_baseline_raw", "ts_thinking_ended_at",
         "ts_joined_midstream", "ts_phase", "ts_raw_think_chars", "ts_raw_resp_chars", "ts_raw_tc_chars",
         "ts_est_think_tokens", "ts_est_resp_tokens", "ts_est_output_tokens", "ts_cum_points",
@@ -1022,7 +983,6 @@ class ConversationRuntime:
         self.ts_seen_step_indices: set[int] = set()
         self.ts_calibrated_step_indices: set[int] = set()
         self.ts_waiting_turn_since = 0.0
-        self.ts_waiting_from_hook = False
         self.ts_active_step_idx = -1
         self.ts_step_created_at = self.ts_first_token_at = self.ts_first_chunk_tokens = 0.0
         self.ts_last_growth_at = self.ts_baseline_at = self.ts_baseline_tokens = self.ts_thinking_ended_at = 0.0
@@ -1100,8 +1060,6 @@ class FlowPilotEngine:
     SYNC_FS_MIN_INTERVAL_SEC = 0.8
     NEW_CONV_DB_GRACE_SEC = 15.0
     NEW_ZERO_STEP_DB_GRACE_SEC = 30.0
-    HOOK_BEACON_SYNTH_TTL_SEC = 10.0
-    HOOK_BEACON_RUN_BRIDGE_SEC = 4.0
     STREAM_READ_TIMEOUT_SEC = 660.0
     PLANNER_CREATED_TS_MAX_AGE_SEC = 780.0
     SQLITE_READ_TIMEOUT_SEC = 0.15
@@ -1116,9 +1074,14 @@ class FlowPilotEngine:
 
     def __init__(self, ls_instance_id: str = "") -> None:
         self._lock = threading.RLock()
+        self._rev_cond = threading.Condition(self._lock)
         self._stop_event = threading.Event()
         self._sync_wake_event = threading.Event()
         self._poller_started = False
+        self._on_config_change: Optional[Callable[[], None]] = None
+        self._rpc_local = threading.local()
+        self._rpc_conns_lock = threading.Lock()
+        self._rpc_conns: set[http.client.HTTPConnection] = set()
 
         self.ls_address = normalize_ls_address(os.environ.get("ANTIGRAVITY_LS_ADDRESS", ""))
         self.csrf_token = os.environ.get("ANTIGRAVITY_CSRF_TOKEN", "").strip()
@@ -1126,14 +1089,12 @@ class FlowPilotEngine:
         self.ls_instance_id = ls_instance_id.strip() or self._derive_ls_instance_id(self.ls_address)
         self._engine_started_at = time.time()
         self._ls_start_ts = self._discover_ls_start_ts()
-        self._bound_ls_instance_id = self.ls_instance_id
 
         app_data_env = os.environ.get("ANTIGRAVITY_APP_DATA_DIR", "").strip()
         self.app_data_dir = Path(app_data_env) if app_data_env else (Path.home() / ".gemini" / "antigravity")
         plugin_data_env = os.environ.get("PLUGIN_DATA", "").strip()
         self.plugin_data_dir = Path(plugin_data_env) if plugin_data_env else (self.app_data_dir / "plugin_data" / "agy-flow-pilot")
         self.state_dir = self.plugin_data_dir / "state"
-        self.hook_state_dir = self.plugin_data_dir / "hook_state"
         self.nodes_dir = self.plugin_data_dir / "nodes"
         self.config_path = self.plugin_data_dir / "config.json"
         self.fast_io_stats_path = self.plugin_data_dir / "fast_io_stats.json"
@@ -1144,12 +1105,11 @@ class FlowPilotEngine:
         self._fast_io_stats_cache: dict[str, Any] = dict(DEFAULT_FAST_IO_STATS)
         self.config: dict[str, Any] = {
             "stallThresholdSec": 90,
-            "hostThemeHint": "light",
             "hud": dict(DEFAULT_HUD_CONFIG),
             "fastIo": dict(DEFAULT_FAST_IO_CONFIG),
         }
 
-        self._model_labels: dict[str, str] = dict(FALLBACK_MODEL_LABELS)
+        self._model_labels: dict[str, str] = {}
         self._model_max_tokens: dict[str, int] = {}
         self._default_model_id = ""
         self._last_model_sync_at = 0.0
@@ -1178,9 +1138,7 @@ class FlowPilotEngine:
         self._checked_hints: set[str] = set()
         self._removed_cids: dict[str, float] = {}
         self._annotation_archive_cache: dict[str, tuple[int, int, bool]] = {}
-        self._hook_beacons_dir_sig: tuple[int, int] = (0, 0)
-        self._hook_beacons_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
-        self._dir_watch_sig: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0)
+        self._dir_watch_sig: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._pending_fs_mutation = False
 
         self._runtimes: dict[str, ConversationRuntime] = {}
@@ -1192,6 +1150,7 @@ class FlowPilotEngine:
         self._last_ws_trim_at = 0.0
 
         self._state_rev = 0
+        self._last_built_rev = 0
         self._has_built_once = False
         self._last_built_at = 0.0
         self._last_running_count = 0
@@ -1199,7 +1158,8 @@ class FlowPilotEngine:
         self._last_total_live_tps = 0.0
         self._next_recent_expiry_at = 0.0
         self._last_calm_fp: Any = None
-        self._watched_fs_sig: tuple[int, int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0, 0)
+        self._last_bg_active_tick_fp: Any = None
+        self._watched_fs_sig: tuple[int, int, int, int, int, int] = (0, 0, 0, 0, 0, 0)
         self._watched_conv_entry_sig = 0
         self._ann_dir_ns = -1
         self._ann_sig_cache_at = 0.0
@@ -1213,10 +1173,46 @@ class FlowPilotEngine:
         self._last_model_cal_persist_at = 0.0
         self._load_model_calibrations(force=True)
 
+    def set_config_change_callback(self, cb: Optional[Callable[[], None]]) -> None:
+        self._on_config_change = cb
+
+    def _bump_rev_locked(self) -> int:
+        self._state_rev += 1
+        self._rev_cond.notify_all()
+        return self._state_rev
+
     def bump_rev(self) -> int:
         with self._lock:
-            self._state_rev += 1
+            return self._bump_rev_locked()
+
+    def get_rev(self) -> int:
+        with self._lock:
             return self._state_rev
+
+    def wake_sse_waiters(self) -> None:
+        with self._rev_cond:
+            self._rev_cond.notify_all()
+
+    def wait_for_rev_change(
+        self,
+        last_rev: int,
+        timeout: float = 20.0,
+        stop_check: Optional[Callable[[], bool]] = None,
+    ) -> tuple[int, bool]:
+        """Block on _rev_cond until _state_rev != last_rev, stop is signaled, or timeout elapses."""
+        deadline = time.monotonic() + max(0.05, float(timeout))
+        with self._rev_cond:
+            while (
+                not self._stop_event.is_set()
+                and not (stop_check is not None and stop_check())
+                and self._state_rev == last_rev
+            ):
+                rem = deadline - time.monotonic()
+                if rem <= 0.0:
+                    break
+                self._rev_cond.wait(timeout=rem)
+            stopped = self._stop_event.is_set() or bool(stop_check is not None and stop_check())
+            return self._state_rev, stopped
 
     @staticmethod
     def _derive_ls_instance_id(ls_addr: str) -> str:
@@ -1241,13 +1237,14 @@ class FlowPilotEngine:
             self._poller_started = True
             self._engine_started_at = time.time()
             self._ls_start_ts = self._discover_ls_start_ts()
-            self._bound_ls_instance_id = self.ls_instance_id
         self._poller_thread = threading.Thread(target=self._background_loop, name="flow-pilot-watchdog", daemon=True)
         self._poller_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         self._sync_wake_event.set()
+        with self._rev_cond:
+            self._rev_cond.notify_all()
         with self._lock:
             self._poller_started = False
             handles = list(self._streams.values())
@@ -1258,6 +1255,14 @@ class FlowPilotEngine:
             ]
         for h in handles:
             h.stop()
+        with self._rpc_conns_lock:
+            rpc_conns = list(self._rpc_conns)
+            self._rpc_conns.clear()
+        for conn in rpc_conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
         for cid in dirty_cids:
             try:
                 self._persist_runtime_state(cid)
@@ -1272,7 +1277,7 @@ class FlowPilotEngine:
     # Fast Filesystem Watch & Monotonic Short-Circuit Protocol
     # ------------------------------------------------------------------
 
-    def _compute_fast_fs_sig(self) -> tuple[int, int, int, int, int, int, int]:
+    def _compute_fast_fs_sig(self) -> tuple[int, int, int, int, int, int]:
         conv_dir = self.app_data_dir / "conversations"
         conv_ns = _stat_mtime_ns(str(conv_dir))
         sum_db_str = str(self.app_data_dir / "conversation_summaries.db")
@@ -1333,10 +1338,9 @@ class FlowPilotEngine:
             w_ns, w_sz = _stat_mtime_and_size(str(conv_dir / f"{safe_cid(w_cid)}.db-wal"))
             if w_ns > 0 or w_sz > 0:
                 wal_sig ^= (hash(w_cid) & 0x7FFFFFFF) ^ w_ns ^ (w_sz << 16)
-        hook_sig = _scandir_files_sig(str(self.hook_state_dir))
         cfg_ns = _stat_mtime_ns(str(self.config_path))
         fio_ns = _stat_mtime_ns(str(self.fast_io_stats_path))
-        return (conv_ns, sum_ns, ann_sig, hook_sig, cfg_ns, fio_ns, wal_sig)
+        return (conv_ns, sum_ns, ann_sig, cfg_ns, fio_ns, wal_sig)
 
     def _compute_conv_entry_sig(self, conv_dir_ns: Optional[int] = None) -> int:
         conv_dir_str = str(self.app_data_dir / "conversations")
@@ -1382,7 +1386,7 @@ class FlowPilotEngine:
             )
             built_age = now - self._last_built_at
             if any_active:
-                max_age = 0.20 if (any_decoding or self._last_total_live_tps > 0.0) else 0.85
+                max_age = 0.50 if (any_decoding or self._last_total_live_tps > 0.0) else 1.50
                 if built_age < 0.0 or built_age >= max_age:
                     return False
             elif self._last_stalled_count > 0:
@@ -1401,7 +1405,7 @@ class FlowPilotEngine:
         cur_fs = self._compute_fast_fs_sig()
         if any_active:
             # While active, routine summary DB flushes are handled off-thread by _background_loop;
-            # break short-circuit on dir, annotation, hook, config, fastio, or active .db-wal changes.
+            # break short-circuit on dir, annotation, config, fastio, or active .db-wal changes.
             if cur_fs[0] != exp_fs[0] or cur_fs[2:] != exp_fs[2:]:
                 return False
         elif cur_fs != exp_fs:
@@ -1410,12 +1414,12 @@ class FlowPilotEngine:
             return False
         return True
 
-    def _consume_fs_mutation_signal(self) -> tuple[bool, tuple[int, int, int, int, int, int, int]]:
+    def _consume_fs_mutation_signal(self) -> tuple[bool, tuple[int, int, int, int, int, int]]:
         fs_sig = self._compute_fast_fs_sig()
-        sig5 = (fs_sig[0], fs_sig[1], fs_sig[2], fs_sig[3], fs_sig[6])
+        sig4 = (fs_sig[0], fs_sig[1], fs_sig[2], fs_sig[5])
         with self._lock:
-            if sig5 != self._dir_watch_sig:
-                self._dir_watch_sig = sig5
+            if sig4 != self._dir_watch_sig:
+                self._dir_watch_sig = sig4
                 self._checked_hints.clear()
                 self._pending_fs_mutation = True
                 return True, fs_sig
@@ -1432,7 +1436,6 @@ class FlowPilotEngine:
             hud_copy["pinnedIds"] = list(hud_copy.get("pinnedIds") or [])
             return {
                 "stallThresholdSec": int(self.config.get("stallThresholdSec", 90)),
-                "hostThemeHint": str(self.config.get("hostThemeHint") or "light"),
                 "hud": hud_copy,
                 "fastIo": _sanitize_fast_io_config(self.config.get("fastIo")),
             }
@@ -1463,11 +1466,11 @@ class FlowPilotEngine:
             self._fast_io_stats_sig = sig
             self._fast_io_stats_cache = dict(out)
             if changed:
-                self._state_rev += 1
+                self._bump_rev_locked()
         return out
 
     def _load_config_safe(self, force: bool = False) -> None:
-        migrated_snapshot: Optional[dict[str, Any]] = None
+        cfg_changed = False
         try:
             st_ns = _stat_mtime_ns(str(self.config_path))
             if st_ns <= 0:
@@ -1478,40 +1481,35 @@ class FlowPilotEngine:
             raw = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 with self._lock:
+                    prev_cfg = (
+                        int(self.config.get("stallThresholdSec", 90)),
+                        dict(self.config.get("hud") or {}),
+                        dict(self.config.get("fastIo") or {}),
+                    )
                     if raw.get("stallThresholdSec") is not None:
                         self.config["stallThresholdSec"] = max(0, min(3600, int(raw["stallThresholdSec"])))
-                    self.config["hostThemeHint"] = "light"
 
                     raw_hud = raw.get("hud") if isinstance(raw.get("hud"), dict) else {}
                     sanitized_hud = _sanitize_hud_config(raw_hud, self.config.get("hud"))
-
                     sanitized_fast_io = _sanitize_fast_io_config(raw.get("fastIo"), self.config.get("fastIo"))
                     self.config["hud"] = sanitized_hud
                     self.config["fastIo"] = sanitized_fast_io
                     self._config_mtime_ns = st_ns
-                    self._state_rev += 1
-
-                    if (
-                        "autoHealStream" in raw
-                        or "autoCancelStall" in raw
-                        or raw_hud.get("theme") != "light"
-                        or "autoCollapseOnIdle" in raw_hud
-                        or "uiStyleVersion" in raw_hud
-                        or str(raw.get("hostThemeHint") or "").strip().lower() != "light"
-                        or not isinstance(raw.get("fastIo"), dict)
-                    ):
-                        migrated_snapshot = {
-                            "stallThresholdSec": int(self.config["stallThresholdSec"]),
-                            "hostThemeHint": "light",
-                            "hud": {**sanitized_hud, "pinnedIds": list(sanitized_hud.get("pinnedIds") or [])},
-                            "fastIo": dict(sanitized_fast_io),
-                        }
+                    next_cfg = (
+                        int(self.config["stallThresholdSec"]),
+                        dict(sanitized_hud),
+                        dict(sanitized_fast_io),
+                    )
+                    if next_cfg != prev_cfg or self._state_rev <= 0:
+                        cfg_changed = True
+                        self._bump_rev_locked()
         except Exception:
             return
-        if migrated_snapshot is not None:
-            self._write_json_atomic(self.config_path, migrated_snapshot)
-            with self._lock:
-                self._config_mtime_ns = _stat_mtime_ns(str(self.config_path))
+        if cfg_changed and (cb := self._on_config_change) is not None:
+            try:
+                cb()
+            except Exception:
+                pass
 
     def update_config(self, patch: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(patch, dict):
@@ -1520,7 +1518,6 @@ class FlowPilotEngine:
         with self._lock:
             if patch.get("stallThresholdSec") is not None:
                 self.config["stallThresholdSec"] = max(0, min(3600, int(patch["stallThresholdSec"])))
-            self.config["hostThemeHint"] = "light"
 
             hud_patch: dict[str, Any] = {}
             for src in (patch.get("hud"), patch.get("prefs")):
@@ -1547,10 +1544,9 @@ class FlowPilotEngine:
 
             cur_fast_io = _sanitize_fast_io_config(fast_io_patch, self.config.get("fastIo"))
             self.config["fastIo"] = cur_fast_io
-            self._state_rev += 1
+            self._bump_rev_locked()
             snapshot = {
                 "stallThresholdSec": int(self.config["stallThresholdSec"]),
-                "hostThemeHint": str(self.config.get("hostThemeHint") or "light"),
                 "hud": {**cur_hud, "pinnedIds": list(cur_hud["pinnedIds"])},
                 "fastIo": dict(cur_fast_io),
             }
@@ -1567,6 +1563,41 @@ class FlowPilotEngine:
             headers["x-codeium-csrf-token"] = self.csrf_token
         return headers
 
+    def _close_local_rpc_conn(self) -> None:
+        conn = getattr(self._rpc_local, "conn", None)
+        self._rpc_local.conn = None
+        self._rpc_local.key = None
+        if conn is not None:
+            with self._rpc_conns_lock:
+                self._rpc_conns.discard(conn)
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _get_rpc_conn(self, host: str, port: int, timeout: float, force_new: bool = False) -> http.client.HTTPConnection:
+        key = (host, port)
+        conn = None if force_new else getattr(self._rpc_local, "conn", None)
+        if conn is not None and getattr(self._rpc_local, "key", None) == key:
+            conn.timeout = timeout
+            sock = getattr(conn, "sock", None)
+            if sock is not None:
+                try:
+                    sock.settimeout(timeout)
+                    return conn
+                except OSError:
+                    self._close_local_rpc_conn()
+            else:
+                return conn
+        else:
+            self._close_local_rpc_conn()
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        self._rpc_local.conn = conn
+        self._rpc_local.key = key
+        with self._rpc_conns_lock:
+            self._rpc_conns.add(conn)
+        return conn
+
     def rpc_call(
         self,
         method: str,
@@ -1575,29 +1606,46 @@ class FlowPilotEngine:
     ) -> dict[str, Any]:
         if not self.ls_address:
             raise RuntimeError("ANTIGRAVITY_LS_ADDRESS is not configured")
-        url = f"http://{self.ls_address}/exa.language_server_pb.LanguageServerService/{method}"
+        host, port = self._parse_host_port()
+        path = f"/exa.language_server_pb.LanguageServerService/{method}"
         data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
         headers = self._build_ls_headers("application/json")
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-                return _loads_json_buf(raw) if raw else {}
-        except urllib.error.HTTPError as exc:
-            err_body = ""
+        headers["Connection"] = "keep-alive"
+        for attempt in range(2):
+            conn = self._get_rpc_conn(host, port, timeout, force_new=(attempt > 0))
             try:
-                err_body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            finally:
-                try:
-                    exc.close()
-                except Exception:
-                    pass
-            raise RuntimeError(f"RPC {method} HTTP {exc.code}: {err_body or exc.reason}") from exc
+                conn.request("POST", path, body=data, headers=headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+                status, reason, will_close = resp.status, resp.reason, resp.will_close
+                if will_close:
+                    self._close_local_rpc_conn()
+                if status >= 400:
+                    err_body = raw.decode("utf-8", errors="replace") if raw else ""
+                    raise RuntimeError(f"RPC {method} HTTP {status}: {err_body or reason}")
+                return _loads_json_buf(raw) if raw else {}
+            except TimeoutError:
+                self._close_local_rpc_conn()
+                raise
+            except (
+                http.client.RemoteDisconnected,
+                http.client.BadStatusLine,
+                http.client.CannotSendRequest,
+                http.client.ResponseNotReady,
+                http.client.IncompleteRead,
+                BrokenPipeError,
+                ConnectionResetError,
+                ConnectionAbortedError,
+                OSError,
+            ):
+                self._close_local_rpc_conn()
+                if attempt == 0:
+                    continue
+                raise
+        return {}
 
     # ------------------------------------------------------------------
-    # Trajectory Discovery, Beacon Synthesis & Stream Pool
+    # Trajectory Discovery & Stream Pool
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -1682,60 +1730,10 @@ class FlowPilotEngine:
     @staticmethod
     def _extract_title(cid: str, summary: dict[str, Any]) -> str:
         ann = summary.get("annotations") if isinstance(summary.get("annotations"), dict) else {}
-        for candidate in (ann.get("title"), summary.get("summary"), summary.get("_hookTitleHint")):
+        for candidate in (ann.get("title"), summary.get("summary")):
             if isinstance(candidate, str) and candidate.strip():
                 return candidate.strip()
         return f"会话 {cid[:8]}"
-
-    def _get_hook_beacons_map(self) -> dict[str, dict[str, Any]]:
-        dir_str = str(self.hook_state_dir)
-        dir_ns = _stat_mtime_ns(dir_str)
-        if dir_ns <= 0:
-            with self._lock:
-                self._hook_beacons_dir_sig = (0, 0)
-                self._hook_beacons_cache.clear()
-            return {}
-
-        entries_info: list[tuple[str, str, int, int]] = []
-        acc_sig = 0
-        try:
-            with os.scandir(dir_str) as it:
-                for e in it:
-                    if e.name.endswith(".json") and not e.name.startswith("."):
-                        try:
-                            st = e.stat(follow_symlinks=False)
-                            f_ns, f_sz = int(st.st_mtime_ns), int(st.st_size)
-                            entries_info.append((e.name, e.path, f_ns, f_sz))
-                            acc_sig ^= hash(e.name) ^ f_ns ^ (f_sz << 12)
-                        except OSError:
-                            continue
-        except OSError:
-            return {}
-
-        cur_sig = (dir_ns, acc_sig)
-        with self._lock:
-            if cur_sig == self._hook_beacons_dir_sig and self._hook_beacons_cache:
-                return {str(d["conversationId"]): dict(d) for _, _, d in self._hook_beacons_cache.values() if d.get("conversationId")}
-            prev_cache = dict(self._hook_beacons_cache)
-
-        next_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
-        for fname, fpath, f_ns, f_sz in entries_info:
-            prev = prev_cache.get(fname)
-            if prev is not None and prev[0] == f_ns and prev[1] == f_sz:
-                next_cache[fname] = prev
-                continue
-            try:
-                parsed = json.loads(Path(fpath).read_text(encoding="utf-8"))
-                if isinstance(parsed, dict) and (b_cid := str(parsed.get("conversationId") or parsed.get("cid") or "").strip()):
-                    parsed["conversationId"] = b_cid
-                    next_cache[fname] = (f_ns, f_sz, parsed)
-            except Exception:
-                continue
-
-        with self._lock:
-            self._hook_beacons_dir_sig = cur_sig
-            self._hook_beacons_cache = next_cache
-            return {str(d["conversationId"]): dict(d) for _, _, d in next_cache.values() if d.get("conversationId")}
 
     def _is_annotation_file_archived(self, cid: str) -> bool:
         if not cid:
@@ -1764,7 +1762,7 @@ class FlowPilotEngine:
         return removed
 
     def _is_conversation_removed(
-        self, cid: str, summary: Optional[dict[str, Any]], now: float, beacons: Optional[dict[str, dict[str, Any]]] = None
+        self, cid: str, summary: Optional[dict[str, Any]], now: float
     ) -> bool:
         if not cid or not isinstance(summary, dict):
             return True
@@ -1792,20 +1790,12 @@ class FlowPilotEngine:
             previously_had_db = (cid in self._db_seen_cids) or bool(rt and rt.had_db_on_disk)
         if previously_had_db:
             return True
-        if bool(summary.get("_fromHookBeacon", False)):
-            return False
 
         s_stat = short_run_status(str(summary.get("status") or "IDLE"))
         if s_stat == "RUNNING" or s_stat in ACTIVE_SUBAGENT_STATUSES or bool(
             rt and (rt.composite_running or (rt.last_stream_frame_at > 0.0 and (now - rt.last_stream_frame_at) < 20.0))
         ):
             return False
-
-        b = beacons.get(cid) if isinstance(beacons, dict) else None
-        if isinstance(b, dict):
-            b_ts = max(float(b.get("lastPreInvocationAt") or 0.0), float(b.get("lastSessionStartAt") or 0.0))
-            if b_ts > 0.0 and (now - b_ts) <= 20.0:
-                return False
 
         created_ts = parse_iso_ts(str(summary.get("createdTime") or ""))
         mod_ts = self._summary_sort_ts(summary)
@@ -1843,7 +1833,6 @@ class FlowPilotEngine:
         self,
         cids_to_purge: set[str],
         explicitly_removed: set[str],
-        beacons: dict[str, dict[str, Any]],
         now: float,
         still_in_ls: Optional[set[str]] = None,
     ) -> tuple[list[_StreamWorkerHandle], list[Path], bool]:
@@ -1867,7 +1856,7 @@ class FlowPilotEngine:
                     if root_rt.archived_children_usage.get(pcid) != summary_6:
                         root_rt.archived_children_usage[pcid] = summary_6
                         root_rt.dirty_state = True
-                        self._state_rev += 1
+                        self._bump_rev_locked()
             self._runtimes.pop(pcid, None)
             self._known_cids.discard(pcid)
             self._first_seen_at.pop(pcid, None)
@@ -1882,10 +1871,6 @@ class FlowPilotEngine:
             if not aged_out_only:
                 sk = safe_cid(pcid)
                 unlink_paths.append(self.state_dir / f"{sk}.json")
-                b = beacons.get(pcid)
-                b_upd = float(b.get("lastPreInvocationAt") or 0.0) if isinstance(b, dict) else 0.0
-                if pcid in explicitly_removed or b_upd <= 0.0 or (now - b_upd) > self.HOOK_BEACON_SYNTH_TTL_SEC:
-                    unlink_paths.append(self.hook_state_dir / f"{sk}.json")
 
         if len(self._db_seen_cids) > 2048:
             for old_k, _ in sorted(self._db_seen_cids.items(), key=lambda kv: kv[1])[: len(self._db_seen_cids) - 1536]:
@@ -1896,25 +1881,6 @@ class FlowPilotEngine:
         if pinned_changed and isinstance(cur_hud, dict):
             cur_hud["pinnedIds"] = cur_pinned
         return stopped_handles, unlink_paths, pinned_changed
-
-    def _enrich_workspace_from_beacon_or_disk(self, rt: ConversationRuntime, beacon: Optional[dict[str, Any]] = None) -> None:
-        if rt.workspace_name:
-            return
-        raw = beacon
-        if not isinstance(raw, dict):
-            hp = self.hook_state_dir / f"{safe_cid(rt.cid)}.json"
-            try:
-                if hp.is_file():
-                    loaded = json.loads(hp.read_text(encoding="utf-8"))
-                    if isinstance(loaded, dict):
-                        raw = loaded
-            except Exception:
-                raw = None
-        if isinstance(raw, dict):
-            ws_paths = raw.get("workspacePaths")
-            if isinstance(ws_paths, list) and ws_paths and (first_p := str(ws_paths[0] or "").strip().rstrip("/\\")):
-                rt.workspace_path = first_p
-                rt.workspace_name = Path(first_p).name or first_p
 
     def _record_model_max_tokens_locked(self, max_tokens: int, *keys: str) -> None:
         iv = int(max_tokens) if max_tokens else 0
@@ -1944,11 +1910,6 @@ class FlowPilotEngine:
                 for cand in (lbl, lbl.upper()):
                     if (live_val := self._model_max_tokens.get(cand)) and live_val > 0:
                         return int(live_val)
-            fb = FALLBACK_MODEL_LABELS.get(s) or FALLBACK_MODEL_LABELS.get(s.upper()) or ""
-            if fb and fb != lbl:
-                for cand in (fb, fb.upper()):
-                    if (live_val := self._model_max_tokens.get(cand)) and live_val > 0:
-                        return int(live_val)
             probe = f"{s} {lbl}" if (lbl and lbl != s) else s
             if probe not in seen:
                 seen.add(probe)
@@ -1970,7 +1931,7 @@ class FlowPilotEngine:
             return
         try:
             data = self.rpc_call("GetCascadeModelConfigData", {}, timeout=3.0)
-            mapping = dict(FALLBACK_MODEL_LABELS)
+            mapping: dict[str, str] = {}
             max_tokens_map: dict[str, int] = {}
             all_cfg_items: list[Any] = list(data.get("clientModelConfigs") or [])
             if isinstance(bm_cfgs := data.get("battleModeModelConfigs"), list):
@@ -2099,11 +2060,10 @@ class FlowPilotEngine:
         now = time.time()
         fs_sig = self._compute_fast_fs_sig()
         with self._lock:
-            self._dir_watch_sig = (fs_sig[0], fs_sig[1], fs_sig[2], fs_sig[3], fs_sig[6])
+            self._dir_watch_sig = (fs_sig[0], fs_sig[1], fs_sig[2], fs_sig[5])
             self._pending_fs_mutation = False
             if raw_summaries:
                 self._all_ls_cids = set(raw_summaries.keys())
-        beacons = self._get_hook_beacons_map()
 
         with self._lock:
             pinned_set = set((self.config.get("hud") or {}).get("pinnedIds") or [])
@@ -2137,7 +2097,6 @@ class FlowPilotEngine:
                 short_run_status(str(s.get("status") or "IDLE")) in ACTIVE_ROOT_STATUSES
                 or cid in pinned_set
                 or cid == self.default_env_cid
-                or cid in beacons
                 or cid in active_mem_cids
             ):
                 selected_roots.add(cid)
@@ -2179,55 +2138,10 @@ class FlowPilotEngine:
         clean_summaries: dict[str, dict[str, Any]] = {}
         for cid in selected_cids:
             summary = raw_summaries[cid]
-            if self._is_conversation_removed(cid, summary, now, beacons):
+            if self._is_conversation_removed(cid, summary, now):
                 explicitly_removed.add(cid)
                 continue
-            s_copy = dict(summary)
-            if cid not in subagent_cids and cid in beacons:
-                b = beacons[cid]
-                if not bool(b.get("isSubagent")):
-                    if t_hint := str(b.get("firstUserTitle") or "").strip():
-                        s_copy["_hookTitleHint"] = t_hint
-                    pre_at = float(b.get("lastPreInvocationAt") or 0.0)
-                    s_mod = parse_iso_ts(str(s_copy.get("lastModifiedTime") or ""))
-                    if (
-                        pre_at > 0.0
-                        and (now - pre_at) <= self.HOOK_BEACON_RUN_BRIDGE_SEC
-                        and short_run_status(str(s_copy.get("status") or "IDLE")) != "RUNNING"
-                        and s_mod < (pre_at - 0.05)
-                    ):
-                        s_copy["status"] = "CASCADE_RUN_STATUS_RUNNING"
-                        s_copy["_hookBridgedRunningAt"] = pre_at
-                        s_copy["lastModifiedTime"] = datetime.datetime.fromtimestamp(pre_at, tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-            clean_summaries[cid] = s_copy
-
-        for b_cid, b in beacons.items():
-            if b_cid in clean_summaries or b_cid in explicitly_removed or b_cid in subagent_cids:
-                continue
-            first_title = str(b.get("firstUserTitle") or "").strip()
-            if bool(b.get("isSubagent")) or not first_title:
-                continue
-            if self._is_annotation_file_archived(b_cid):
-                explicitly_removed.add(b_cid)
-                continue
-            with self._lock:
-                seen_in_ls = b_cid in self._ls_seen_cids
-                prev_db = b_cid in self._db_seen_cids or bool(self._runtimes.get(b_cid) and self._runtimes[b_cid].had_db_on_disk)
-            if seen_in_ls:
-                explicitly_removed.add(b_cid)
-                continue
-            conv_dir = self.app_data_dir / "conversations"
-            if prev_db and conv_dir.is_dir() and not (conv_dir / f"{safe_cid(b_cid)}.db").is_file():
-                explicitly_removed.add(b_cid)
-                continue
-            pre_at = float(b.get("lastPreInvocationAt") or 0.0)
-            if pre_at > 0.0 and (now - pre_at) <= self.HOOK_BEACON_SYNTH_TTL_SEC:
-                iso_t = datetime.datetime.fromtimestamp(pre_at, tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-                clean_summaries[b_cid] = {
-                    "status": "CASCADE_RUN_STATUS_RUNNING", "stepCount": 1, "createdTime": iso_t, "lastModifiedTime": iso_t,
-                    "summary": "", "_hookTitleHint": first_title,
-                    "_fromHookBeacon": True, "_hookBridgedRunningAt": pre_at,
-                }
+            clean_summaries[cid] = dict(summary)
 
         traj_fp = tuple(
             sorted(
@@ -2254,13 +2168,12 @@ class FlowPilotEngine:
             all_to_purge = disappeared | stale_mem
             if all_to_purge:
                 stopped_handles, unlink_paths, pinned_changed = self._purge_removed_cids_locked(
-                    all_to_purge, explicitly_removed, beacons, now, still_in_ls=still_in_ls
+                    all_to_purge, explicitly_removed, now, still_in_ls=still_in_ls
                 )
                 if pinned_changed:
                     cur_hud = dict(self.config.get("hud") or DEFAULT_HUD_CONFIG)
                     pinned_changed_snap = {
                         "stallThresholdSec": int(self.config.get("stallThresholdSec", 90)),
-                        "hostThemeHint": str(self.config.get("hostThemeHint") or "light"),
                         "hud": {**cur_hud, "pinnedIds": list(cur_hud.get("pinnedIds") or [])},
                         "fastIo": _sanitize_fast_io_config(self.config.get("fastIo")),
                     }
@@ -2268,7 +2181,7 @@ class FlowPilotEngine:
             if traj_fp != self._last_traj_fp or all_to_purge:
                 self._last_traj_fp = traj_fp
                 self._checked_hints.clear()
-                self._state_rev += 1
+                self._bump_rev_locked()
 
             for alive_cid in clean_summaries:
                 self._removed_cids.pop(alive_cid, None)
@@ -2337,32 +2250,17 @@ class FlowPilotEngine:
                 if not (idx_pos < 28 or composite_running or has_sub_error or cid in pinned_set or cid == self.default_env_cid or cid in self._runtimes):
                     continue
 
-                rt = self._get_or_create_runtime(cid, beacon=beacons.get(cid))
+                rt = self._get_or_create_runtime(cid)
                 rt.title = self._extract_title(cid, summary)
                 ws_name, ws_path, br_name = _extract_workspace_info(summary)
                 if ws_name:
                     rt.workspace_name, rt.workspace_path = ws_name, ws_path
-                elif not rt.workspace_name:
-                    self._enrich_workspace_from_beacon_or_disk(rt, beacon=beacons.get(cid))
                 if br_name:
                     rt.branch_name = br_name
-                if isinstance(b_info := beacons.get(cid), dict) and not rt.model_id and not rt.model_name:
-                    if b_model := str(b_info.get("modelName") or "").strip():
-                        rt.model_name = b_model
-                        rt.model_label = self._resolve_model_label(rt.model_id, rt.model_name)
-                        if not rt.max_tokens_exact:
-                            rt.max_tokens = self._resolve_model_max_tokens_locked(rt.model_id, rt.model_name, rt.model_label)
                 rt.last_modified_at = parse_iso_ts(str(summary.get("lastModifiedTime") or ""))
                 rt.sort_ts = sort_ts
                 rt.latest_termination_reason = str(summary.get("latestExecutorTerminationReason") or "")
 
-                bridged_at = float(summary.get("_hookBridgedRunningAt") or 0.0)
-                stream_has_newer_frame = rt.stream_connected and (rt.stream_initial_seen or (bridged_at > 0.0 and rt.last_stream_frame_at >= bridged_at))
-                if bridged_at > 0.0 and not stream_has_newer_frame and rt.ts_active_step_idx < 0:
-                    rt.ts_waiting_turn_since = bridged_at
-                    rt.ts_waiting_from_hook = True
-                elif root_running and rt.ts_waiting_from_hook:
-                    rt.ts_waiting_from_hook = False
                 if not rt.stream_connected:
                     rt.raw_status = raw_status
                     if root_short_stat not in ACTIVE_ROOT_STATUSES:
@@ -2381,14 +2279,14 @@ class FlowPilotEngine:
                     rt.composite_running = True
                     rt.run_batch_started_at, rt.just_finished_at = bg_started_ts or now, 0.0
                     rt.dirty_state = True
-                    self._state_rev += 1
+                    self._bump_rev_locked()
                 elif not composite_running and rt.composite_running:
                     # RUNNING -> IDLE transition: persist runtime state once!
                     rt.composite_running = False
                     rt.just_finished_at, rt.run_batch_started_at = now, 0.0
                     rt.dirty_state = True
                     to_persist_idle.append(cid)
-                    self._state_rev += 1
+                    self._bump_rev_locked()
                 elif composite_running and rt.run_batch_started_at <= 0.0:
                     rt.run_batch_started_at = bg_started_ts or rt.last_modified_at or now
 
@@ -2482,7 +2380,6 @@ class FlowPilotEngine:
                         rt.stream_connected = rt.stream_initial_seen = False
                         rt.raw_executor_loop_status = ""
                         rt.ts_waiting_turn_since = 0.0
-                        rt.ts_waiting_from_hook = False
                         if rt.ts_active_step_idx >= 0:
                             if rt.ts_est_output_tokens > 0:
                                 self._finalize_planner_step_locked(rt, idx=rt.ts_active_step_idx, st=None, gm_info=None, now=now, is_initial=False)
@@ -2607,7 +2504,7 @@ class FlowPilotEngine:
                 if root_rt.archived_children_usage.get(sub_cid) != summary_6:
                     root_rt.archived_children_usage[sub_cid] = summary_6
                     root_rt.dirty_state = True
-                    self._state_rev += 1
+                    self._bump_rev_locked()
                     changed = True
             if changed:
                 self._persist_runtime_state(r_cid)
@@ -2993,7 +2890,7 @@ class FlowPilotEngine:
     # Connect Streaming: StreamAgentStateUpdates
     # ------------------------------------------------------------------
 
-    def _get_or_create_runtime(self, cid: str, beacon: Optional[dict[str, Any]] = None) -> ConversationRuntime:
+    def _get_or_create_runtime(self, cid: str) -> ConversationRuntime:
         with self._lock:
             if (rt := self._runtimes.get(cid)) is not None:
                 return rt
@@ -3019,7 +2916,6 @@ class FlowPilotEngine:
             self._hydrate_runtime_from_disk_state(rt)
             with self._lock:
                 self._seed_runtime_cal_from_model_locked(rt)
-            self._enrich_workspace_from_beacon_or_disk(rt, beacon=beacon)
         return rt
 
     def _ensure_stream(self, cid: str, wait_sec: float = 0.0) -> Optional[_StreamWorkerHandle]:
@@ -3078,8 +2974,8 @@ class FlowPilotEngine:
     def _parse_host_port(self) -> tuple[str, int]:
         if ":" in self.ls_address:
             host, port_s = self.ls_address.rsplit(":", 1)
-            return host, int(port_s)
-        return self.ls_address, 80
+            return host.strip("[]"), int(port_s)
+        return self.ls_address.strip("[]"), 80
 
     @staticmethod
     def _extract_top_children_from_groups(
@@ -3176,27 +3072,6 @@ class FlowPilotEngine:
             out["chatModel"] = cm_slim
         return out
 
-    @classmethod
-    def _is_auto_heal_user_input_step(cls, st: dict[str, Any]) -> bool:
-        if bool(st.get("isAutoHeal")):
-            return True
-        ui = st.get("userInput")
-        if not isinstance(ui, dict):
-            return False
-        marker = cls._AUTO_HEAL_PROMPT_MARKER
-        for k in ("userResponse", "text", "prompt"):
-            v = ui.get(k)
-            if isinstance(v, str) and marker in v:
-                return True
-        items = ui.get("items")
-        if isinstance(items, list):
-            for it in items:
-                if isinstance(it, dict):
-                    tv = it.get("text")
-                    if isinstance(tv, str) and marker in tv:
-                        return True
-        return False
-
     @staticmethod
     def _distill_large_update_dict(upd: dict[str, Any], is_initial_snapshot: bool) -> dict[str, Any]:
         """Distill a large update into a compact telemetry dict so temporary buffers free cleanly."""
@@ -3248,7 +3123,7 @@ class FlowPilotEngine:
                     if not isinstance(idx, int) or not isinstance(st, dict):
                         continue
                     if p < cutoff and str(st.get("status") or "") not in ("CORTEX_STEP_STATUS_RUNNING", "RUNNING"):
-                        if st.get("type") == "CORTEX_STEP_TYPE_USER_INPUT" and idx >= max_old_ui_idx and not FlowPilotEngine._is_auto_heal_user_input_step(st):
+                        if st.get("type") == "CORTEX_STEP_TYPE_USER_INPUT" and idx >= max_old_ui_idx:
                             max_old_ui_idx = idx
                             max_old_ui_st = {"type": "CORTEX_STEP_TYPE_USER_INPUT", "status": st.get("status")}
                         continue
@@ -3260,8 +3135,6 @@ class FlowPilotEngine:
                             mk: meta[mk] for mk in ("createdAt", "startedAt", "completedAt", "finishedGeneratingAt", "viewableAt", "generatorModel", "modelUsage", "logUri") if mk in meta
                         },
                     }
-                    if st.get("type") == "CORTEX_STEP_TYPE_USER_INPUT" and FlowPilotEngine._is_auto_heal_user_input_step(st):
-                        s_slim["isAutoHeal"] = True
                     if "name" in tc:
                         s_slim["metadata"]["toolCall"] = {"name": tc["name"]}
                     if _is_daemon_step_dict(st, tc):
@@ -3480,7 +3353,6 @@ class FlowPilotEngine:
                         rt.stream_connected = rt.stream_initial_seen = False
                         rt.raw_executor_loop_status = ""
                         rt.ts_waiting_turn_since = 0.0
-                        rt.ts_waiting_from_hook = False
                         if rt.ts_active_step_idx >= 0:
                             if rt.ts_est_output_tokens > 0:
                                 self._finalize_planner_step_locked(rt, idx=rt.ts_active_step_idx, st=None, gm_info=None, now=time.time(), is_initial=False)
@@ -3506,8 +3378,6 @@ class FlowPilotEngine:
                 if cand and cand in self._model_labels:
                     return self._model_labels[cand]
             default_label = self._model_labels.get(self._default_model_id) or "Auto"
-        if mid and (mapped_mid := FALLBACK_MODEL_LABELS.get(mid.upper())):
-            return mapped_mid
         if disp and not disp.upper().startswith("MODEL_PLACEHOLDER_"):
             return disp
         with self._lock:
@@ -3518,8 +3388,6 @@ class FlowPilotEngine:
         if not raw:
             return default_label
         if raw.upper().startswith("MODEL_PLACEHOLDER_"):
-            if mapped := FALLBACK_MODEL_LABELS.get(raw.upper()):
-                return mapped
             suffix = raw.upper().replace("MODEL_PLACEHOLDER_", "").strip()
             return f"Model ({suffix})" if suffix else default_label
         if " " in raw:
@@ -3595,8 +3463,6 @@ class FlowPilotEngine:
         if rm:
             with self._lock:
                 routed = self._model_labels.get(rm) or self._model_labels.get(rm.upper()) or ""
-            if not routed:
-                routed = FALLBACK_MODEL_LABELS.get(rm.upper(), "")
         if not routed and rdisp and not rdisp.upper().startswith("MODEL_PLACEHOLDER_"):
             routed = rdisp
             used_rdisp = True
@@ -3643,12 +3509,8 @@ class FlowPilotEngine:
 
             if upd.get("status"):
                 rt.raw_status = str(upd["status"])
-                if short_run_status(rt.raw_status) == "RUNNING":
-                    rt.ts_waiting_from_hook = False
             if upd.get("executorLoopStatus"):
                 rt.raw_executor_loop_status = str(upd["executorLoopStatus"])
-                if short_run_status(rt.raw_executor_loop_status) == "RUNNING":
-                    rt.ts_waiting_from_hook = False
 
             if isinstance(ci := upd.get("compactionInfo"), dict) and isinstance(indices := ci.get("compactedAtStepIndices"), list):
                 rt.compaction_count = len(indices)
@@ -3747,7 +3609,6 @@ class FlowPilotEngine:
                     and not self._has_foreground_active_tool_locked(rt)
                 ):
                     rt.ts_waiting_turn_since = now
-                    rt.ts_waiting_from_hook = False
             elif is_initial:
                 rt.bg_tasks_by_idx.clear()
 
@@ -3843,7 +3704,7 @@ class FlowPilotEngine:
                             if st_pre_short != "RUNNING":
                                 if st.get("type") == "CORTEX_STEP_TYPE_USER_INPUT":
                                     s_st = str(st.get("status") or "")
-                                    if s_st not in ("CORTEX_STEP_STATUS_PENDING", "CORTEX_STEP_STATUS_QUEUED", "CORTEX_STEP_STATUS_WAITING") and not self._is_auto_heal_user_input_step(st):
+                                    if s_st not in ("CORTEX_STEP_STATUS_PENDING", "CORTEX_STEP_STATUS_QUEUED", "CORTEX_STEP_STATUS_WAITING"):
                                         rt.last_user_input_idx = max(rt.last_user_input_idx, idx)
                                 continue
 
@@ -3902,15 +3763,13 @@ class FlowPilotEngine:
 
                         if stype == "CORTEX_STEP_TYPE_USER_INPUT":
                             if sstatus not in ("CORTEX_STEP_STATUS_PENDING", "CORTEX_STEP_STATUS_QUEUED", "CORTEX_STEP_STATUS_WAITING"):
-                                if idx > rt.last_user_input_idx and not self._is_auto_heal_user_input_step(st):
+                                if idx > rt.last_user_input_idx:
                                     rt.last_user_input_idx = idx
                                     rt.has_error_step_hint = False
                                 if not is_initial:
                                     rt.ts_waiting_turn_since = now
-                                    rt.ts_waiting_from_hook = False
                         elif stype != "CORTEX_STEP_TYPE_PLANNER_RESPONSE" and short_st == "DONE" and not is_initial:
                             rt.ts_waiting_turn_since = now
-                            rt.ts_waiting_from_hook = False
 
                         if ("ERROR" in stype or short_st in ("ERROR", "FAILED")) and idx >= rt.last_user_input_idx:
                             rt.has_error_step_hint = True
@@ -3952,7 +3811,6 @@ class FlowPilotEngine:
                         }
                         if stype != "CORTEX_STEP_TYPE_PLANNER_RESPONSE" and short_st in ("RUNNING", "WAITING", "WAITING_FOR_USER", "PENDING") and not is_daemon_step:
                             rt.ts_waiting_turn_since = 0.0
-                            rt.ts_waiting_from_hook = False
 
                         if stype == "CORTEX_STEP_TYPE_PLANNER_RESPONSE":
                             pr = st.get("plannerResponse") if isinstance(st.get("plannerResponse"), dict) else {}
@@ -4030,7 +3888,6 @@ class FlowPilotEngine:
                 if bool(upd.get("fullyIdle", False)) and "status" not in upd:
                     rt.raw_status = "CASCADE_RUN_STATUS_IDLE"
                 rt.ts_waiting_turn_since = 0.0
-                rt.ts_waiting_from_hook = False
 
             if is_initial:
                 rt.usage_hydrated = True
@@ -4057,7 +3914,7 @@ class FlowPilotEngine:
             elif not rt.max_tokens_exact and (rt.model_id or rt.model_name or rt.model_label):
                 rt.max_tokens = self._resolve_model_max_tokens_locked(rt.model_id, rt.model_name, rt.model_label)
             rt.dirty_state = True
-            self._state_rev += 1
+            self._bump_rev_locked()
 
             # Zero periodic streaming disk writes: persist only on RUNNING -> IDLE stop or initial Frame-0 hydration.
             if not self._is_subagent_cid(cid) and from_live_stream:
@@ -4606,7 +4463,6 @@ class FlowPilotEngine:
             self._reset_active_token_speed_locked(rt)
             rt.ts_active_step_idx = idx
             rt.ts_waiting_turn_since = 0.0
-            rt.ts_waiting_from_hook = False
             if created_ts > 0 and -2.0 <= (now - created_ts) < self.PLANNER_CREATED_TS_MAX_AGE_SEC:
                 rt.ts_step_created_at = min(now, created_ts)
             elif waiting_since > 0 and 0.0 <= (now - waiting_since) < self.PLANNER_CREATED_TS_MAX_AGE_SEC:
@@ -4966,10 +4822,7 @@ class FlowPilotEngine:
         )
         if is_loop_running and not self._has_foreground_active_tool_locked(rt):
             wait_since = rt.ts_waiting_turn_since
-            if wait_since > 0.0 and rt.ts_waiting_from_hook:
-                if (now - wait_since) > self.HOOK_BEACON_RUN_BRIDGE_SEC:
-                    wait_since = 0.0
-            elif wait_since <= 0.0 and rt.stream_connected and rt.stream_initial_seen:
+            if wait_since <= 0.0 and rt.stream_connected and rt.stream_initial_seen:
                 wait_since = self._infer_waiting_turn_since_locked(rt, now)
             elif wait_since <= 0.0 and rt.last_modified_at > 0.0 and 0.0 <= (now - rt.last_modified_at) <= 60.0:
                 wait_since = min(now, rt.last_modified_at)
@@ -5140,7 +4993,7 @@ class FlowPilotEngine:
                         rt.total_steps = max_db_idx + 1
                         rt.last_step_index = max(rt.last_step_index, max_db_idx)
                 if latest_err != prev_err:
-                    self._state_rev += 1
+                    self._bump_rev_locked()
         except Exception:
             pass
         finally:
@@ -5162,7 +5015,7 @@ class FlowPilotEngine:
                     rt.db_bg_sig = (0, 0, 0)
                     if rt.db_bg_script is not None:
                         rt.db_bg_script = None
-                        self._state_rev += 1
+                        self._bump_rev_locked()
             return
         wal_ns, wal_sz = _stat_mtime_and_size(str(db_file) + "-wal")
         sig = (db_ns, wal_ns, wal_sz)
@@ -5253,7 +5106,7 @@ class FlowPilotEngine:
                     for st in rt.steps_by_idx.values():
                         if st.get("status") == "RUNNING" and st.get("toolName") in ("run_workflow", "run_command"):
                             st["status"] = "DONE"
-                self._state_rev += 1
+                self._bump_rev_locked()
 
     # ------------------------------------------------------------------
     # Disk Snapshot Persistence & GC (<PLUGIN_DATA>/state/<cid>.json)
@@ -5435,16 +5288,12 @@ class FlowPilotEngine:
                 all_ls_safe.update(safe_cid(k) for k in summaries.keys())
             removed_safe = {safe_cid(k) for k in self._removed_cids.keys()}
 
-        sub_safe_cids: set[str] = set()
-        active_sub_safe_cids: set[str] = set()
-        for k, s in summaries.items():
-            if isinstance(s, dict) and self._is_subagent_summary(k, s):
-                sk = safe_cid(k)
-                sub_safe_cids.add(sk)
-                if not bool(s.get("killed", False)) and short_run_status(str(s.get("status") or "")) in ACTIVE_SUBAGENT_STATUSES:
-                    active_sub_safe_cids.add(sk)
+        sub_safe_cids: set[str] = {
+            safe_cid(k) for k, s in summaries.items()
+            if isinstance(s, dict) and self._is_subagent_summary(k, s)
+        }
 
-        for folder in (self.plugin_data_dir, self.state_dir, self.hook_state_dir, self.nodes_dir):
+        for folder in (self.plugin_data_dir, self.state_dir, self.nodes_dir):
             try:
                 if folder.is_dir():
                     for tmp_f in folder.glob(".*.tmp"):
@@ -5456,18 +5305,16 @@ class FlowPilotEngine:
             except OSError:
                 pass
 
-        for folder, cap, is_hook in ((self.state_dir, self.MAX_DISK_STATE_FILES, False), (self.hook_state_dir, 96, True)):
-            try:
-                if not folder.is_dir():
-                    continue
+        try:
+            if self.state_dir.is_dir():
                 kept: list[tuple[float, Path]] = []
-                for f in folder.glob("*.json"):
+                for f in self.state_dir.glob("*.json"):
                     try:
                         st_m = float(f.stat().st_mtime)
                         age = max(0.0, now - st_m)
-                        drop_sub = (f.stem in sub_safe_cids) and (not is_hook or f.stem not in active_sub_safe_cids)
+                        drop_sub = f.stem in sub_safe_cids
                         drop_ls_absent = False
-                        if not is_hook and all_ls_safe and f.stem not in all_ls_safe:
+                        if all_ls_safe and f.stem not in all_ls_safe:
                             if f.stem in removed_safe or age > self.LS_ABSENT_STATE_TTL_SEC:
                                 drop_ls_absent = True
                             elif not _UUID_LIKE_RE.fullmatch(f.stem) and age > 300.0:
@@ -5478,15 +5325,15 @@ class FlowPilotEngine:
                             kept.append((st_m, f))
                     except OSError:
                         pass
-                if len(kept) > cap:
+                if len(kept) > self.MAX_DISK_STATE_FILES:
                     kept.sort(key=lambda x: x[0], reverse=True)
-                    for _, old_f in kept[cap:]:
+                    for _, old_f in kept[self.MAX_DISK_STATE_FILES:]:
                         try:
                             old_f.unlink(missing_ok=True)
                         except OSError:
                             pass
-            except OSError:
-                pass
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Heartbeat & Watchdog Self-Healing
@@ -5969,24 +5816,78 @@ class FlowPilotEngine:
                 probe_targets: list[str] = []
                 child_probe_targets: list[tuple[str, str]] = []
                 with self._lock:
-                    has_active = any(rt.composite_running or rt.ts_active_step_idx >= 0 for rt in self._runtimes.values())
+                    cfg = dict(self.config)
+                    stall_sec = int(cfg.get("stallThresholdSec") or 90)
                     monitored_roots = [cid for cid in self._streams.keys() if not self._is_subagent_cid(cid)]
                     if self._active_main_cid and self._active_main_cid not in monitored_roots:
                         monitored_roots.insert(0, self._active_main_cid)
-                    cfg = dict(self.config)
-                    stall_sec = int(cfg.get("stallThresholdSec") or 90)
 
-                    idle_roots = sorted(
-                        ((self._summary_sort_ts(s), k, int(s.get("stepCount") or 0)) for k, s in self._trajectories.items()
-                         if isinstance(s, dict) and not bool(s.get("killed", False)) and not self._is_subagent_summary(k, s)),
-                        key=lambda x: x[0], reverse=True,
-                    )
+                    if self._next_recent_expiry_at > 0.0 and now >= self._next_recent_expiry_at:
+                        self._next_recent_expiry_at = 0.0
+                        self._bump_rev_locked()
+
                     bg_scan_cids: list[str] = []
                     bg_seen: set[str] = set()
+                    hot_root_ids: set[str] = set((cfg.get("hud") or {}).get("pinnedIds") or [])
+                    if self._active_main_cid:
+                        hot_root_ids.add(self._active_main_cid)
+
+                    active_tick_fp: list[tuple[Any, ...]] = []
                     for r_cid, r_rt in self._runtimes.items():
+                        is_rt_active = bool(r_rt.composite_running or r_rt.ts_active_step_idx >= 0)
+                        if is_rt_active:
+                            has_active = True
+                            ts_snap = self._compute_token_speed_locked(r_rt, now)
+                            hb_stalled = False
+                            if stall_sec > 0:
+                                fg = self._find_foreground_running_step_locked(r_rt, include_planner=False)
+                                if isinstance(fg, dict):
+                                    fg_tool = str(fg.get("toolName") or "").strip()
+                                    fg_type = str(fg.get("type") or "")
+                                    if fg_tool and not fg.get("isDaemon") and not _is_intentional_wait_step(fg_tool, fg_type):
+                                        eff_s = float(fg.get("startedAt") or fg.get("createdAt") or 0.0)
+                                        run_s = float(fg.get("runningSince") or 0.0)
+                                        st_ts = max(eff_s, run_s) if run_s > 0.0 else eff_s
+                                        if st_ts > 0.0 and (now - st_ts) >= stall_sec:
+                                            hb_stalled = True
+                            active_tick_fp.append((
+                                r_cid,
+                                bool(ts_snap.get("active")),
+                                str(ts_snap.get("phase") or ""),
+                                float(ts_snap.get("displayTokensPerSec") or 0.0),
+                                hb_stalled,
+                            ))
                         if (r_rt.composite_running or r_rt.db_bg_script is not None) and not self._is_subagent_cid(r_cid):
                             bg_scan_cids.append(r_cid)
                             bg_seen.add(r_cid)
+                        if r_rt.composite_running or (r_rt.just_finished_at > 0 and (now - r_rt.just_finished_at) <= self.RECENT_HOLD_SEC):
+                            hot_root_ids.add(r_cid)
+
+                    if has_active:
+                        tick_fp_t = tuple(sorted(active_tick_fp))
+                        if (
+                            self._last_bg_active_tick_fp is not None
+                            and tick_fp_t != self._last_bg_active_tick_fp
+                            and self._state_rev == self._last_built_rev
+                        ):
+                            self._bump_rev_locked()
+                        self._last_bg_active_tick_fp = tick_fp_t
+                    else:
+                        self._last_bg_active_tick_fp = None
+
+                    idle_roots: list[tuple[float, str, int]] = []
+                    sub_entries: list[tuple[str, dict[str, Any], int]] = []
+                    for k, s in self._trajectories.items():
+                        if not isinstance(s, dict) or bool(s.get("killed", False)):
+                            continue
+                        s_cnt = int(s.get("stepCount") or 0)
+                        if self._is_subagent_summary(k, s):
+                            if s_cnt > 0:
+                                sub_entries.append((k, s, s_cnt))
+                        else:
+                            idle_roots.append((self._summary_sort_ts(s), k, s_cnt))
+                    idle_roots.sort(key=lambda x: x[0], reverse=True)
+
                     for sort_ts, r_cid, s_cnt in idle_roots[: self.MAX_BG_SCAN_ROOTS]:
                         if r_cid in bg_seen or s_cnt <= 0:
                             continue
@@ -6005,49 +5906,34 @@ class FlowPilotEngine:
                             if len(probe_targets) >= 3:
                                 break
 
-                    hot_root_ids: set[str] = {r_cid for _, r_cid, _ in idle_roots[:6]} | set((self.config.get("hud") or {}).get("pinnedIds") or [])
-                    if self._active_main_cid:
-                        hot_root_ids.add(self._active_main_cid)
-                    for r_cid, r_rt in self._runtimes.items():
-                        if r_rt.composite_running or (r_rt.just_finished_at > 0 and (now - r_rt.just_finished_at) <= self.RECENT_HOLD_SEC):
-                            hot_root_ids.add(r_cid)
+                    hot_root_ids.update(r_cid for _, r_cid, _ in idle_roots[:6])
 
                     sub_bg_candidates: list[tuple[float, str]] = []
-                    for k, s in self._trajectories.items():
-                        if not isinstance(s, dict) or bool(s.get("killed", False)) or not self._is_subagent_summary(k, s):
-                            continue
-                        if self._classify_agent_kind(k, s) == "swarm_monitor":
-                            continue
-                        s_cnt = int(s.get("stepCount") or 0)
-                        if s_cnt <= 0 or k in bg_seen:
+                    waiting_sub_candidates: list[tuple[float, str]] = []
+                    for k, s, s_cnt in sub_entries:
+                        kind = self._classify_agent_kind(k, s)
+                        if kind == "swarm_monitor":
                             continue
                         if self._resolve_root_cid(k, self._trajectories) not in hot_root_ids:
                             continue
                         sub_mod = parse_iso_ts(str(s.get("lastModifiedTime") or s.get("createdTime") or ""))
-                        if sub_mod > 0.0 and (now - sub_mod) > self.BG_SCAN_RECENT_WINDOW_SEC:
-                            continue
-                        sub_bg_candidates.append((sub_mod, k))
+                        if k not in bg_seen and not (sub_mod > 0.0 and (now - sub_mod) > self.BG_SCAN_RECENT_WINDOW_SEC):
+                            sub_bg_candidates.append((sub_mod, k))
+                        if (
+                            kind == "swarm_worker"
+                            and k not in self._streams
+                            and k not in self._probing_cids
+                            and short_run_status(str(s.get("status") or "")) not in ACTIVE_SUBAGENT_STATUSES
+                            and "TERMINAL_CUSTOM_HOOK" in str(s.get("latestExecutorTerminationReason") or "").upper()
+                        ):
+                            sub_rt = self._get_or_create_runtime(k)
+                            if sub_rt.snapshot_probed_steps < s_cnt and (sub_rt.tokens_used == 0 or sub_rt.ts_last_completed is None):
+                                waiting_sub_candidates.append((sub_mod, k))
+
                     sub_bg_candidates.sort(key=lambda x: x[0], reverse=True)
                     for _, sub_bg_cid in sub_bg_candidates[: self.MAX_SUB_BG_SCAN]:
                         bg_scan_cids.append(sub_bg_cid)
                         bg_seen.add(sub_bg_cid)
-
-                    waiting_sub_candidates: list[tuple[float, str]] = []
-                    for k, s in self._trajectories.items():
-                        if not isinstance(s, dict) or bool(s.get("killed", False)) or not self._is_subagent_summary(k, s):
-                            continue
-                        if k in self._streams or k in self._probing_cids or self._classify_agent_kind(k, s) != "swarm_worker":
-                            continue
-                        if short_run_status(str(s.get("status") or "")) in ACTIVE_SUBAGENT_STATUSES:
-                            continue
-                        if "TERMINAL_CUSTOM_HOOK" not in str(s.get("latestExecutorTerminationReason") or "").upper():
-                            continue
-                        s_cnt = int(s.get("stepCount") or 0)
-                        if s_cnt <= 0 or self._resolve_root_cid(k, self._trajectories) not in hot_root_ids:
-                            continue
-                        sub_rt = self._get_or_create_runtime(k)
-                        if sub_rt.snapshot_probed_steps < s_cnt and (sub_rt.tokens_used == 0 or sub_rt.ts_last_completed is None):
-                            waiting_sub_candidates.append((parse_iso_ts(str(s.get("lastModifiedTime") or s.get("createdTime") or "")), k))
                     waiting_sub_candidates.sort(key=lambda x: x[0], reverse=True)
                     probe_targets.extend(w_cid for _, w_cid in waiting_sub_candidates[:2])
                     probe_targets_set = set(probe_targets)
@@ -6083,7 +5969,7 @@ class FlowPilotEngine:
                     self._spawn_snapshot_probes_async(probe_targets, child_probe_targets)
             except Exception:
                 pass
-            wait_sec = 0.50 if has_active else 1.0
+            wait_sec = 0.50 if has_active else 2.5
             with self._lock:
                 if self._pending_fs_mutation:
                     rem_fs = self.SYNC_FS_MIN_INTERVAL_SEC - (time.time() - self._last_trajectories_sync_at) + 0.02
@@ -6373,17 +6259,31 @@ class FlowPilotEngine:
         fast_io_stats = self.get_fast_io_stats()
         recent_expiries = [float(t["justFinishedAt"]) + self.RECENT_HOLD_SEC for t in tasks_out if t.get("bucket") == "RECENT" and float(t.get("justFinishedAt") or 0.0) > 0.0]
 
-        calm_fp = (
+        state_fp = (
+            summary_block["runningCount"],
+            summary_block["alertCount"],
+            summary_block["recentCount"],
+            summary_block["idleCount"],
+            summary_block["totalLiveTps"],
+            bool(summary_block["anyWaitingTtft"]),
+            bool(summary_block["anyGenerating"]),
             tuple(
                 (t["taskKey"], t["bucket"], t["status"], t["title"], t["workspaceName"], t["branchName"], t["modelLabel"], t["routedModelLabel"], t["isPinned"],
+                 t["effectiveLiveTps"],
                  t["context"]["used"], t["context"]["max"], t["context"]["compactionCount"], t["context"]["estimatedAfterCompaction"],
                  tuple((c["group"], c["name"], c["tokens"]) for c in t["context"]["topChildren"]),
-                 t["tokenSpeed"]["outputTokens"], t["tokenSpeed"]["isExact"],
+                 bool(t["tokenSpeed"]["active"]), t["tokenSpeed"]["phase"], t["tokenSpeed"]["displayTokensPerSec"],
+                 t["tokenSpeed"]["outputTokens"], t["tokenSpeed"]["isExact"], t["tokenSpeed"]["ttftMs"],
                  t["tokenUsage"]["netTokens"], t["tokenUsage"]["cacheReadTokens"], t["tokenUsage"]["lastTurnCacheHitPct"], t["tokenUsage"]["cacheMissStreak"],
-                 t["heartbeat"]["state"], t["heartbeat"]["stepIndex"], t["heartbeat"].get("runningStepIndex", -1),
+                 t["heartbeat"]["state"], t["heartbeat"]["toolName"], t["heartbeat"]["stepIndex"], t["heartbeat"].get("runningStepIndex", -1),
                  bool(t["heartbeat"]["retryAlert"]), bool(t["heartbeat"].get("isStalled")),
                  bool((t["heartbeat"].get("bgScript") or {}).get("isStalled")),
-                 t["swarmSummary"]["totalCount"], t["swarmSummary"]["runningCount"], t["swarmSummary"]["waitingCount"], t["swarmSummary"]["errorCount"])
+                 t["swarmSummary"]["totalCount"], t["swarmSummary"]["runningCount"], t["swarmSummary"]["waitingCount"], t["swarmSummary"]["errorCount"],
+                 tuple(
+                     (sub_i.get("conversationId"), sub_i.get("state"), bool(sub_i.get("isStalled")), sub_i.get("currentTool"),
+                      (sub_i.get("tokenSpeed") or {}).get("displayTokensPerSec", 0.0))
+                     for sub_i in (t.get("activeSubagents") or [])
+                 ))
                 for t in tasks_out
             ),
             cfg_snap,
@@ -6406,17 +6306,15 @@ class FlowPilotEngine:
             self._last_built_at = time.time()
             self._has_built_once = True
 
-            if (
-                summary_block["runningCount"] > 0
-                or summary_block["anyWaitingTtft"]
-                or summary_block["anyGenerating"]
-                or summary_block["totalLiveTps"] > 0
-            ):
-                self._state_rev += 1
-                self._last_calm_fp = None
-            elif calm_fp != self._last_calm_fp or self._state_rev <= 0:
-                self._last_calm_fp = calm_fp
-                self._state_rev += 1
+            if self._state_rev <= 0:
+                self._last_calm_fp = state_fp
+                self._bump_rev_locked()
+            elif self._state_rev != self._last_built_rev:
+                self._last_calm_fp = state_fp
+            elif state_fp != self._last_calm_fp:
+                self._last_calm_fp = state_fp
+                self._bump_rev_locked()
+            self._last_built_rev = self._state_rev
             rev = self._state_rev
 
         return {
@@ -6431,7 +6329,7 @@ class FlowPilotEngine:
         with self._lock:
             rt = self._get_or_create_runtime(cid)
             rt.dismissed_recent_at = max(now, rt.just_finished_at + 0.001)
-            self._state_rev += 1
+            self._bump_rev_locked()
         self._persist_runtime_state(cid)
         return {"ok": True, "conversationId": cid}
 
@@ -6580,25 +6478,6 @@ class FlowPilotEngine:
                 resp, via = self._send_agent_or_user_msg(cid, "Flow Pilot", msg_text)
             self.bump_rev()
             return {"ok": True, "conversationId": cid, "mode": "wake", "via": via, "response": resp}
-
-        if m == "background_step":
-            indices = self._resolve_running_step_indices(cid, step_index)
-            if not indices:
-                return {"ok": True, "conversationId": cid, "mode": "background_step", "noop": True, "stepIndices": []}
-            via = "CancelCascadeSteps"
-            resp = self.rpc_call("CancelCascadeSteps", {"cascadeId": cid, "stepIndices": indices}, timeout=4.0)
-            with self._lock:
-                if (rt := self._runtimes.get(cid)) is not None:
-                    self._clear_cancelled_bg_steps_locked(rt, indices, clear_all_bg=False)
-            try:
-                self.rpc_call("SendAgentMessage", {
-                    "recipient": cid, "senderId": "agy-flow-pilot", "displayTitle": "Flow Pilot",
-                    "content": f"[Flow Pilot] 已中断卡住的步骤 ({via}) 以解锁主循环，请继续后续流程。",
-                }, timeout=3.0)
-            except Exception:
-                pass
-            self.bump_rev()
-            return {"ok": True, "conversationId": cid, "mode": "background_step", "via": via, "stepIndices": indices, "response": resp}
 
         if m == "cancel_step":
             indices = self._resolve_running_step_indices(cid, step_index)

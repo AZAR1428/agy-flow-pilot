@@ -14,13 +14,14 @@ using Microsoft.Web.WebView2.Core;
 
 [assembly: AssemblyTitle("FlowPilotHost")]
 [assembly: AssemblyProduct("Flow Pilot")]
-[assembly: AssemblyVersion("3.8.3.0")]
-[assembly: AssemblyFileVersion("3.8.3.0")]
+[assembly: AssemblyVersion("3.9.0.0")]
+[assembly: AssemblyFileVersion("3.9.0.0")]
 
 namespace AgyFlowPilot
 {
     internal static class NativeMethods
     {
+        public const int GWL_EXSTYLE = -20;
         public const int WS_EX_TOPMOST = 0x00000008;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
@@ -29,6 +30,7 @@ namespace AgyFlowPilot
         public const int WM_SIZE = 0x0005;
         public const int WM_SETTINGCHANGE = 0x001A;
         public const int WM_GETMINMAXINFO = 0x0024;
+        public const int WM_WINDOWPOSCHANGED = 0x0047;
         public const int WM_DISPLAYCHANGE = 0x007E;
         public const int WM_NCLBUTTONDOWN = 0x00A1;
         public const int WM_SYSCOMMAND = 0x0112;
@@ -67,7 +69,6 @@ namespace AgyFlowPilot
         public const uint SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_NOOWNERZORDER = 0x0200;
 
-        public const uint MONITOR_DEFAULTTONULL = 0x00000000;
         public const uint MONITOR_DEFAULTTOPRIMARY = 0x00000001;
         public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
@@ -139,6 +140,10 @@ namespace AgyFlowPilot
         public static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+        private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+        private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
         [DllImport("user32.dll")]
@@ -185,6 +190,22 @@ namespace AgyFlowPilot
         public static extern IntPtr GetStdHandle(int nStdHandle);
         [DllImport("kernel32.dll")]
         public static extern uint GetFileType(IntPtr hFile);
+
+        public static long GetWindowExStyle(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return 0L;
+            try
+            {
+                if (IntPtr.Size == 8) return GetWindowLongPtr64(hWnd, GWL_EXSTYLE).ToInt64();
+                return (long)GetWindowLong32(hWnd, GWL_EXSTYLE);
+            }
+            catch { return 0L; }
+        }
+
+        public static bool HasTopMostExStyle(IntPtr hWnd)
+        {
+            return (GetWindowExStyle(hWnd) & WS_EX_TOPMOST) != 0;
+        }
 
         public static bool HasRedirectedStdinPipe()
         {
@@ -385,7 +406,9 @@ namespace AgyFlowPilot
 
     internal sealed class HostOptions
     {
+#if SELF_TEST
         public bool SelfTest;
+#endif
         public int ParentPid;
         public int Port;
         public string TargetUrl;
@@ -394,7 +417,6 @@ namespace AgyFlowPilot
         public string ViewMode = "pill";
         public bool AlwaysOnTop = true;
         public string AnchorCorner = "top-right";
-        public string Theme = "light";
         public int? SavedStackWidth;
         public int? SavedCustomHeight;
         public int? InitialPhysicalX;
@@ -408,7 +430,7 @@ namespace AgyFlowPilot
 
     internal sealed class HudForm : Form
     {
-        public const string HostVersion = "3.8.3";
+        public const string HostVersion = "3.9.0";
         public const string LightweightBrowserArgs =
             "--disable-features=msSmartScreenProtection,Translate,msWebOOUI,msPdfOOUI,SpareRendererForSitePerProcess --renderer-process-limit=1 --autoplay-policy=no-user-gesture-required --no-first-run --no-default-browser-check";
 
@@ -468,6 +490,7 @@ namespace AgyFlowPilot
         private int _lastRgnW;
         private int _lastRgnH;
         private int _lastRgnDiameter;
+        private bool _topMostRestoreQueued;
         private System.Windows.Forms.Timer _tempTopMostTimer;
         private System.Windows.Forms.Timer _visibilityGuardTimer;
         private System.Windows.Forms.Timer _navRetryTimer;
@@ -1598,11 +1621,6 @@ namespace AgyFlowPilot
             PostJsonToWeb(_json.Serialize(dict));
         }
 
-        private void EmitMovedEvent(int physX, int physY, uint dpi, string anchor)
-        {
-            EmitMovedEvent(physX, physY, dpi, GetSafeWindowWorkArea(), anchor);
-        }
-
         private void EmitMovedEvent(int physX, int physY, uint dpi, NativeMethods.RECT work, string anchor)
         {
             uint safeDpi = dpi >= 72 ? dpi : 96u;
@@ -1656,6 +1674,39 @@ namespace AgyFlowPilot
                 this.Handle, topMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
                 0, 0, 0, 0,
                 NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER);
+        }
+
+        private void EnsureTopMostIfLost(bool deferToUiLoop = false)
+        {
+            if (!_alwaysOnTop || IsDisposed || !IsHandleCreated || _closingFlag != 0) return;
+            if (_inInteractiveMove || _inInteractiveResize || _inExternalSizeMove) return;
+            if (NativeMethods.HasTopMostExStyle(this.Handle)) return;
+
+            if (deferToUiLoop)
+            {
+                if (_topMostRestoreQueued) return;
+                _topMostRestoreQueued = true;
+                try
+                {
+                    this.BeginInvoke(new Action(delegate
+                    {
+                        _topMostRestoreQueued = false;
+                        if (_alwaysOnTop && !IsDisposed && IsHandleCreated && _closingFlag == 0
+                            && !_inInteractiveMove && !_inInteractiveResize && !_inExternalSizeMove
+                            && !NativeMethods.HasTopMostExStyle(this.Handle))
+                        {
+                            ApplyTopMostNative(true);
+                        }
+                    }));
+                }
+                catch
+                {
+                    _topMostRestoreQueued = false;
+                }
+                return;
+            }
+
+            ApplyTopMostNative(true);
         }
 
         private void ApplyRegionClipIfNeeded(int physW, int physH)
@@ -1862,7 +1913,7 @@ namespace AgyFlowPilot
         private void StartVisibilityGuardTimer()
         {
             if (_visibilityGuardTimer != null) return;
-            _visibilityGuardTimer = new System.Windows.Forms.Timer { Interval = 8000 };
+            _visibilityGuardTimer = new System.Windows.Forms.Timer { Interval = 60000 };
             _visibilityGuardTimer.Tick += delegate
             {
                 if (IsDisposed || !IsHandleCreated || _closingFlag != 0) return;
@@ -1878,10 +1929,6 @@ namespace AgyFlowPilot
                 {
                     EnsureVisibleInWorkAreaAndTopMost("guard_restore");
                     return;
-                }
-                if (_alwaysOnTop)
-                {
-                    ApplyTopMostNative(true);
                 }
             };
             _visibilityGuardTimer.Start();
@@ -1980,6 +2027,12 @@ namespace AgyFlowPilot
                     "reason={0} error={1}: {2}",
                     reason ?? "unspecified", ex.GetType().Name, ex.Message));
             }
+        }
+
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            EnsureTopMostIfLost(true);
         }
 
         protected override void WndProc(ref Message m)
@@ -2084,6 +2137,10 @@ namespace AgyFlowPilot
                 CoreWebView2Controller ctrl = _controller;
                 if (ctrl != null) { try { ctrl.NotifyParentWindowPositionChanged(); } catch { } }
             }
+            else if (m.Msg == NativeMethods.WM_WINDOWPOSCHANGED)
+            {
+                EnsureTopMostIfLost(true);
+            }
             else if (m.Msg == NativeMethods.WM_SIZE)
             {
                 if (IsHandleCreated && !IsDisposed)
@@ -2098,7 +2155,10 @@ namespace AgyFlowPilot
                 if (_dragMonitors != null && (_inInteractiveMove || _inExternalSizeMove))
                     _dragMonitors = NativeMethods.GetAllMonitors();
                 if (!IsDisposed && IsHandleCreated && _closingFlag == 0)
+                {
                     EnsureVisibleInWorkAreaAndTopMost("display_change");
+                    EnsureTopMostIfLost(false);
+                }
             }
             else if (m.Msg == NativeMethods.WM_POWERBROADCAST)
             {
@@ -2107,6 +2167,7 @@ namespace AgyFlowPilot
                     && !IsDisposed && IsHandleCreated && _closingFlag == 0)
                 {
                     EnsureVisibleInWorkAreaAndTopMost("power_resume_" + pbt.ToString(CultureInfo.InvariantCulture));
+                    EnsureTopMostIfLost(false);
                 }
             }
             else if (m.Msg == NativeMethods.WM_DWMCOMPOSITIONCHANGED)
@@ -2766,7 +2827,9 @@ namespace AgyFlowPilot
             NativeMethods.EnablePerMonitorDpiV2();
 
             HostOptions opts = ParseOptions(args);
+#if SELF_TEST
             if (opts.SelfTest) return RunSelfTest(opts);
+#endif
             if (!string.IsNullOrEmpty(opts.TargetUrl))
             {
                 if (!IsAllowedLoopbackHttpUrl(opts.TargetUrl))
@@ -2885,7 +2948,9 @@ namespace AgyFlowPilot
 
                 switch (key.Trim().ToLowerInvariant())
                 {
+#if SELF_TEST
                     case "--self-test": opts.SelfTest = true; break;
+#endif
                     case "--force-region-clip": opts.ForceRegionClip = true; break;
                     case "--parent-pid": case "--ppid": opts.ParentPid = ParseIntArg(args, ref i, inlineVal, opts.ParentPid); break;
                     case "--port": opts.Port = ParseIntArg(args, ref i, inlineVal, opts.Port); break;
@@ -3015,6 +3080,31 @@ namespace AgyFlowPilot
             return int.TryParse(NextStringArg(args, ref idx, inlineVal), NumberStyles.Integer, CultureInfo.InvariantCulture, out v) ? (int?)v : fallback;
         }
 
+        internal static bool IsAllowedLoopbackHttpUrl(string rawUrl)
+        {
+            if (string.IsNullOrWhiteSpace(rawUrl)) return false;
+            Uri uri;
+            if (!Uri.TryCreate(rawUrl.Trim(), UriKind.Absolute, out uri) || uri == null) return false;
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.IsNullOrEmpty(uri.UserInfo)) return false;
+            if (uri.Port <= 0 || uri.Port > 65535) return false;
+            string host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
+            if (host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1")
+                return true;
+            if (uri.HostNameType == UriHostNameType.IPv6)
+            {
+                System.Net.IPAddress ip;
+                if (System.Net.IPAddress.TryParse(uri.DnsSafeHost, out ip)
+                    && ip != null
+                    && System.Net.IPAddress.IPv6Loopback.Equals(ip))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+#if SELF_TEST
         private static bool VerifyEdgeHitTestMappings(out Dictionary<string, int> mapOut)
         {
             mapOut = new Dictionary<string, int>();
@@ -3072,30 +3162,30 @@ namespace AgyFlowPilot
         {
             HostOptions validStackOpts = new HostOptions();
             ApplyHudConfigFromJson(validStackOpts, "{\"hud\":{\"viewMode\":\"stack\",\"alwaysOnTop\":false,\"anchorCorner\":\"bottom-right\",\"width\":336,\"customHeight\":320,\"x\":2397,\"y\":99}}");
-            if (validStackOpts.Theme != "light" || validStackOpts.ViewMode != "stack" || validStackOpts.AlwaysOnTop
+            if (validStackOpts.ViewMode != "stack" || validStackOpts.AlwaysOnTop
                 || validStackOpts.AnchorCorner != "top-right" || validStackOpts.SavedStackWidth != 336
                 || validStackOpts.SavedCustomHeight != 320 || validStackOpts.InitialLogicalX != 2397 || validStackOpts.InitialLogicalY != 99)
                 return false;
 
             HostOptions minBoundOpts = new HostOptions();
             ApplyHudConfigFromJson(minBoundOpts, "{\"hud\":{\"viewMode\":\"pill\",\"anchorCorner\":\"bottom-left\",\"width\":320,\"customHeight\":68}}");
-            if (minBoundOpts.Theme != "light" || minBoundOpts.ViewMode != "pill" || !minBoundOpts.AlwaysOnTop
+            if (minBoundOpts.ViewMode != "pill" || !minBoundOpts.AlwaysOnTop
                 || minBoundOpts.AnchorCorner != "top-left" || minBoundOpts.SavedStackWidth != 320 || minBoundOpts.SavedCustomHeight != 68)
                 return false;
 
             HostOptions maxBoundOpts = new HostOptions();
             ApplyHudConfigFromJson(maxBoundOpts, "{\"hud\":{\"width\":960,\"customHeight\":4096}}");
-            if (maxBoundOpts.Theme != "light" || maxBoundOpts.SavedStackWidth != 960 || maxBoundOpts.SavedCustomHeight != 4096)
+            if (maxBoundOpts.SavedStackWidth != 960 || maxBoundOpts.SavedCustomHeight != 4096)
                 return false;
 
             HostOptions oobLowOpts = new HostOptions();
             ApplyHudConfigFromJson(oobLowOpts, "{\"hud\":{\"width\":319,\"customHeight\":67}}");
-            if (oobLowOpts.SavedStackWidth.HasValue || oobLowOpts.SavedCustomHeight.HasValue || oobLowOpts.Theme != "light")
+            if (oobLowOpts.SavedStackWidth.HasValue || oobLowOpts.SavedCustomHeight.HasValue)
                 return false;
 
             HostOptions oobHighOpts = new HostOptions();
             ApplyHudConfigFromJson(oobHighOpts, "{\"hud\":{\"width\":961,\"customHeight\":4097}}");
-            return !oobHighOpts.SavedStackWidth.HasValue && !oobHighOpts.SavedCustomHeight.HasValue && oobHighOpts.Theme == "light";
+            return !oobHighOpts.SavedStackWidth.HasValue && !oobHighOpts.SavedCustomHeight.HasValue;
         }
 
         private static bool VerifyWorkAreaAndDpiCeilingLogic()
@@ -3183,30 +3273,6 @@ namespace AgyFlowPilot
                 return false;
 
             return true;
-        }
-
-        internal static bool IsAllowedLoopbackHttpUrl(string rawUrl)
-        {
-            if (string.IsNullOrWhiteSpace(rawUrl)) return false;
-            Uri uri;
-            if (!Uri.TryCreate(rawUrl.Trim(), UriKind.Absolute, out uri) || uri == null) return false;
-            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)) return false;
-            if (!string.IsNullOrEmpty(uri.UserInfo)) return false;
-            if (uri.Port <= 0 || uri.Port > 65535) return false;
-            string host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
-            if (host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1")
-                return true;
-            if (uri.HostNameType == UriHostNameType.IPv6)
-            {
-                System.Net.IPAddress ip;
-                if (System.Net.IPAddress.TryParse(uri.DnsSafeHost, out ip)
-                    && ip != null
-                    && System.Net.IPAddress.IPv6Loopback.Equals(ip))
-                {
-                    return true;
-                }
-            }
-            return false;
         }
 
         private static bool VerifyLoopbackUrlGuardLogic()
@@ -3469,15 +3535,14 @@ namespace AgyFlowPilot
                 bool mmiOk = (mmiSize == 40);
 
                 bool lowMemEnumOk = ((int)CoreWebView2MemoryUsageTargetLevel.Low == 1);
-                bool equalWidthOk = string.Equals(HudForm.HostVersion, "3.8.3", StringComparison.Ordinal)
+                bool equalWidthOk = string.Equals(HudForm.HostVersion, "3.9.0", StringComparison.Ordinal)
                     && (HudForm.DefaultPillLogicalWidth == HudForm.DefaultStackLogicalWidth)
                     && (HudForm.DefaultPillLogicalWidth == 388)
                     && (HudForm.MinPillLogicalWidth == HudForm.MinStackLogicalWidth)
                     && (HudForm.MinPillLogicalWidth == 320)
                     && (HudForm.DefaultPillLogicalHeight == 36)
                     && (HudForm.MinPillLogicalHeight == 34)
-                    && (HudForm.MinStackLogicalHeight == 68)
-                    && string.Equals(opts.Theme, "light", StringComparison.Ordinal);
+                    && (HudForm.MinStackLogicalHeight == 68);
                 bool argsOk = HudForm.LightweightBrowserArgs.IndexOf("SpareRendererForSitePerProcess", StringComparison.Ordinal) >= 0
                     && HudForm.LightweightBrowserArgs.IndexOf("--renderer-process-limit=1", StringComparison.Ordinal) >= 0
                     && HudForm.LightweightBrowserArgs.IndexOf("disable-" + "gpu", StringComparison.OrdinalIgnoreCase) < 0;
@@ -3568,7 +3633,6 @@ namespace AgyFlowPilot
                 info["resolvedStackWidth"] = resolvedStackWidth;
                 info["resolvedCustomHeight"] = opts.SavedCustomHeight;
                 info["resolvedAnchor"] = opts.AnchorCorner;
-                info["resolvedTheme"] = opts.Theme;
                 info["minStackSize"] = new int[] { HudForm.MinStackLogicalWidth, HudForm.MinStackLogicalHeight };
                 info["minPillSize"] = new int[] { HudForm.MinPillLogicalWidth, HudForm.MinPillLogicalHeight };
                 info["dwmEnabled"] = dwm;
@@ -3587,5 +3651,6 @@ namespace AgyFlowPilot
                 return 1;
             }
         }
+#endif
     }
 }

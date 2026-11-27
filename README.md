@@ -1,43 +1,48 @@
-# Flow Pilot (`agy-flow-pilot` v3.8.3)
+# Flow Pilot (`agy-flow-pilot` v3.9.0)
 
-专为 **Google Antigravity** 打造的 **浅色统一胶囊桌面悬浮窗（Unified Capsule Telemetry HUD）+ Fast I/O 零溢盘本地文件引擎** 一体化插件套件（100% 只读被动遥测 + 显式手动控制，绝不代发消息）。
+专为 **Google Antigravity** 打造的 **实时遥测侧边栏 + 按需浅色胶囊桌面悬浮窗（Unified Capsule Telemetry HUD）+ Fast I/O 零溢盘本地文件引擎** 一体化插件套件（零 Hook 同步税、100% 只读被动遥测与显式手动控制，绝不代发消息）。
 
 ---
 
-## 一、架构总览（v3.8.3 · 零自动代发纯只读监控、多屏混 DPI 自由拖拽与全链路状态实时同步）
+## 一、架构总览（v3.9.0 · 零 Hook、SSE 实时推送、按需桌面胶囊与 3 工具极速 Fast I/O）
 
 ```text
 %USERPROFILE%\.gemini\config\plugins\agy-flow-pilot\
-├── plugin.json                # 插件清单与元信息 (v3.8.3，对齐 sidecar://agy-flow-pilot/pilot/ 自动唤起)
-├── mcp_config.json            # 注册 fast_io 原生 Python Eager MCP 服务（45 字符工具名，per-tool eager）
-├── hooks.json                 # SessionStart/PreInvocation 极速微标（无 PreToolUse 工具冷启动开销）
+├── plugin.json                # 插件清单与元信息 (v3.9.0，对齐 sidecar://agy-flow-pilot/pilot/ 自动唤起)
+├── mcp_config.json            # 注册 fast_io 原生 Python Eager MCP 服务（3 工具 eager：grep/glob_tree/outline）
 ├── LICENSE                    # MIT 开源许可证
 ├── THIRD_PARTY_NOTICES.md     # 微软 WebView2 SDK 第三方组件许可声明
 ├── rules\
-│   └── AGENTS.md              # 零溢盘读写路由（常规读走并行 read_file，探索走 Eager fast_io）与 PS 5.1 规范
+│   └── AGENTS.md              # 精简读写路由（<=1.1KB：常规读走并行 read_file，探索走 Eager fast_io）与 PS 5.1 护栏
 ├── assets\
 │   └── logo.svg               # 暖白电光蓝科学遥测图标
 ├── scripts\
-│   ├── hook_entry.py          # 零提示注入微标（基于父/根会话关联字段判定子代理）
-│   └── fast_io_mcp.py         # 纯标准库 <=8.8KB 零溢盘 Eager MCP & --cli 引擎（多查询 grep/骨架/模糊树/微切片）
+│   └── fast_io_mcp.py         # 纯标准库 <=8.8KB 零溢盘 3 工具 Eager MCP & --cli 引擎（CRLF 安全正则预筛 + 节流统计）
 └── sidecars\
     └── pilot\
-        ├── sidecar.json       # 注册 AUX_PANE / SIDEBAR 入口与 agent_permissions 声明
-        ├── engine.py          # 16 路流连接池 (660s) + 只读异常/挂起感知 + 蜂群/WAL 实时状态同步与零额外 RPC 上下文审计
-        ├── server.py          # 本地安全网关 + 多窗活跃优先聚合总线 + 桌面悬浮窗进程监管器与生命周期审计
-        ├── ui.html            # 浅色统一胶囊双模前端（告警中断/防重入唤醒、静默告警徽标、令牌轮换安全重载、膨胀主因抽屉）
+        ├── sidecar.json       # 注册 AUX_PANE / SIDEBAR 入口与 -S -B -u 无字节码启动参数
+        ├── engine.py          # 16 路流连接池 + 线程局部 http.client 长连接复用 + 事件驱动 _state_rev 与上下文审计
+        ├── server.py          # 本地安全网关 + SSE /api/events 推送 + ?compact=1 紧凑载荷 + 按需桌面 HUD 监管器
+        ├── ui.html            # 浅色统一胶囊双模前端（EventSource 实时订阅、隐藏态降频、懒渲染历史列表与手动控制）
         └── host\
             ├── FlowPilotHost.cs
-            ├── FlowPilotHost.exe              # 跨多屏混合 DPI 自由拖拽 / 防误关 / 息屏自愈 / 八方向缩放无边框置顶宿主
+            ├── FlowPilotHost.exe              # 精简生产宿主（剥离 #if SELF_TEST、事件驱动置顶与跨多屏混合 DPI 拖拽）
             ├── Microsoft.Web.WebView2.Core.dll
             └── WebView2Loader.dll
 ```
 
-> 仓库内还包含开发维护专用脚本 `scripts/build_host.ps1`（安全编译 `FlowPilotHost.exe`）与 `scripts/pre_publish_audit.py`（发布前安全脱敏审计），`install.ps1` 按白名单部署时不会将其拷贝到插件运行目录。
+> 仓库内还包含开发维护专用脚本 `scripts/build_host.ps1`（先编译临时自测版运行 `--self-test`，再产出无自测代码且零调试符号的生产 `FlowPilotHost.exe`）与 `scripts/pre_publish_audit.py`（发布前安全脱敏审计），`install.ps1` 按白名单部署时不会将其拷贝到插件运行目录。
 
 ---
 
-## 二、v3.8.3 & 历史版本更新亮点
+## 二、v3.9.0 & 历史版本更新亮点
+
+### v3.9.0 深度瘦身与实时提速亮点（零 Hook、SSE 实时推送、6× 正则提速与按需桌面 HUD）
+1. **P0 关键回归修复与零字节码启动**：修复 `engine.py` 中 `USER_INPUT` 步骤处理残留引用导致的流更新异常，彻底清理历史死代码、冗余全局调试对象与前端双发头；`sidecar.json` 补齐 `"-S", "-B", "-u"` 启动参数且 `server.py` 将 `sys.dont_write_bytecode = True` 提前至顶层导入前，确保运行目录零 `__pycache__`。
+2. **零 Hook 同步税与按需桌面 HUD**：彻底移除 `hooks.json` 与 `scripts/hook_entry.py`（`install.ps1` 热更新时自动清理旧部署残留与遗留 `__pycache__`），消除每轮对话同步拉起 Python 进程的等待开销，由流连接与 WAL/DB 监听统一接管；默认开启零额外进程的 IDE 内嵌侧边栏、`hud.enabled` 默认按需弹出桌面悬浮窗（关闭/收起即释放宿主与 WebView2 进程树），单窗节点心跳同步拉长并基于目录 `mtime_ns` 节流。
+3. **SSE 实时推送、紧凑载荷与连接池冷启动提速**：新增 `GET /api/events` SSE 修订号实时推送与 `GET /api/tasks?compact=1` 胶囊紧凑模式，修复 HUD 隐藏态未降频缺陷并将计时器刷新收敛至 `1s`、裁剪高频 `ResizeObserver` 与懒渲染历史列表；服务端移除 `urllib.request` 与 `concurrent.futures`（`logging`）启动依赖，改用线程局部 `http.client` 长连接复用与轻量线程。
+4. **Fast I/O 检索提速、3 工具 Eager 聚焦与 Prompt 瘦身 >52%**：`fast_io_grep` 为全量正则开启 CRLF 安全全文预筛与 `files_only` 免 `splitlines()` 快速路径（同时保持 `count` 行计数与跨行 `\s+` 语义等价），`fast_io_stats.json` 改为内存节流批量落盘（`30s` / `10` 次 + `atexit`），`handle_outline` 仅在超大规模批次（`>12` 文件或 `>2MB`）启用并发读取；MCP 暴露聚焦不可替代三件套（`fast_io_grep`/`fast_io_glob_tree`/`fast_io_outline`，`--cli` 完整保留 `batch_read`），`rules/AGENTS.md` 去除重复 Schema 与无关风格规则后体积缩减超 52%。
+5. **原生宿主事件驱动置顶与精简生产二进制**：`FlowPilotHost.exe` 取消每 `8s` 无条件 `SetWindowPos` 置顶轮询，改为监听窗口/显示/休眠事件按需恢复置顶并保留 `60s` 离屏安全网；572 行自测套件迁入 `#if SELF_TEST`，构建脚本在验证自测通过后编译精简版生产二进制。
 
 ### v3.8.3 精简亮点（移除冗余自动续跑看门狗，回归纯只读监控）
 1. **彻底移除后台自动续跑与自动中断看门狗**：由于客户端自身已具备断网退避重试与重启恢复能力，彻底删除后台 `autoHealStream` 自动代发续跑消息与 `autoCancelStall` 自动中断逻辑，以及前端“断流自动续跑”开关；加载既有 `config.json` 时自动清理残留旧键。
@@ -77,8 +82,8 @@
 
 在 Windows PowerShell 中执行 `.\install.ps1` 即可安装或热更新至 `%USERPROFILE%\.gemini\config\plugins\agy-flow-pilot\`：
 
-- **白名单精简部署**：仅按显式白名单拷贝运行时必需文件与目录（`plugin.json`、`mcp_config.json`、`hooks.json`、`LICENSE`、`THIRD_PARTY_NOTICES.md`、`assets/`、`rules/`、`scripts/fast_io_mcp.py`、`scripts/hook_entry.py`、`sidecars/`），并自动过滤 `__pycache__`、`*.pdb`、`*.tmp`、`*.log` 及 WebView2 用户数据目录，绝不将开发脚本或临时文件带入插件运行目录。
-- **平滑热替换与旧配置清理**：覆盖前自动停止旧版 `FlowPilotHost.exe` 与 sidecar Python 进程，自动探测并绑定真实 Python 3.10+ 解释器（跳过 WindowsApps 空占位），迁移 `fast_io` Eager MCP 配置；同时仅清理旧版本可能遗留在 `~/.gemini/config/hooks.json` 中的 `flow-pilot-swarm-wait-guard` 条目（若文件已空则移除空文件）。
+- **白名单精简部署**：仅按显式白名单拷贝运行时必需文件与目录（`plugin.json`、`mcp_config.json`、`LICENSE`、`THIRD_PARTY_NOTICES.md`、`assets/`、`rules/`、`scripts/fast_io_mcp.py`、`sidecars/`），并自动过滤 `__pycache__`、`*.pdb`、`*.tmp`、`*.log` 及 WebView2 用户数据目录，绝不将开发脚本或临时文件带入插件运行目录。
+- **平滑热替换与旧配置清理**：覆盖前自动停止旧版 `FlowPilotHost.exe` 与 sidecar Python 进程，清理目标目录遗留的 `__pycache__` 以及旧版本残留的 `hooks.json`、`scripts/hook_entry.py` 与 `scripts/fast_pretool_gate.py`，自动探测并绑定真实 Python 3.10+ 解释器（跳过 WindowsApps 空占位），迁移 `fast_io` 3 工具 Eager MCP 配置；同时仅清理旧版本可能遗留在 `~/.gemini/config/hooks.json` 中的 `flow-pilot-swarm-wait-guard` 条目（若文件已空则移除空文件）。
 - **零侵入原则**：`install.ps1` **严禁且绝不会修改** `~/.gemini/config/config.json`。
 
 ### 可选优化：为 Fast I/O 添加只读 MCP 放行规则（完全用户自愿）
@@ -96,7 +101,7 @@
 ## 四、桌面悬浮窗防消失加固与生命周期审计
 
 - **防意外关闭守卫（Anti-Accidental-Close Guard）**：原生宿主在 `WndProc` / `OnFormClosing` 中拦截非授权的 `Alt+F4`、`WM_CLOSE`、`SC_MINIMIZE` 与 `SC_MAXIMIZE`，仅放行显式关闭/收起指令或系统关机，避免快捷键或窗口管理误触导致悬浮窗消失。
-- **多屏活跃定位 / 休眠唤醒 / TopMost 自动恢复**：首次打开与重置位置自动对齐鼠标所在活跃屏；监听显示拓扑变更（`WM_DISPLAYCHANGE`）、休眠唤醒（`WM_POWERBROADCAST`）、DWM/DPI 与工作区变更事件，结合 `8s` 零抢焦点轻量可见性守卫自动将窗口拉回有效工作区并保持置顶。
+- **多屏活跃定位 / 休眠唤醒 / 事件驱动 TopMost 恢复**：首次打开与重置位置自动对齐鼠标所在活跃屏；监听窗口层级（`WM_WINDOWPOSCHANGED`）、失焦、显示拓扑变更（`WM_DISPLAYCHANGE`）、休眠唤醒（`WM_POWERBROADCAST`）与 DPI 变更事件按需恢复置顶，并配合 `60s` 低频离屏安全网避免窗口意外最小化或脱离有效工作区。
 - **坐标防污染与布局重排守卫**：前端 `ui.html` 对宿主回传的 `x`/`y` 执行有限非哨兵区间校验（`(-10000, 30000)`），防止系统最小化 `-32000` 哨兵坐标写入配置；`HostWindowBridge.resize` 仅在桥接发送成功或降级 DOM 缩放时提交去重缓存。
 - **全链路 `hud_lifecycle.log` 审计轨迹**：`server.py` 与 `FlowPilotHost.exe` 统一写入线程安全、上限 `256KB`（自动裁剪保留尾部 `~128KB`）的 `<PLUGIN_DATA>/hud_lifecycle.log`，完整追溯启动、退出、来源与自愈事件。
 

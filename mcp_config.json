@@ -9,9 +9,6 @@
         "${PLUGIN_ROOT}/scripts/fast_io_mcp.py"
       ],
       "tools": {
-        "fast_io_batch_read": {
-          "eager": true
-        },
         "fast_io_grep": {
           "eager": true
         },

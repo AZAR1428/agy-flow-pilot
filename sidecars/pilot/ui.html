@@ -6,7 +6,7 @@
   <link rel="icon" href="data:," />
   <title>Flow Pilot · 实时监控</title>
   <style>
-  /* Flow Pilot v3.8.3 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
+  /* Flow Pilot v3.9.0 — Light-Only Unified Capsule + Real-Time SSE & Anti-Jitter Telemetry Design Tokens */
   :root,
   html[data-theme="light"] {
     color-scheme: light;
@@ -1015,7 +1015,6 @@
   const modeCls = isHudMode ? "mode-hud" : "mode-embed";
   document.documentElement.classList.add(modeCls);
   document.body.classList.add(modeCls);
-  document.documentElement.setAttribute("data-theme", "light");
 
   const el = (id) => document.getElementById(id);
 
@@ -1031,9 +1030,13 @@
 
   const POLL_STREAM_MS = 250;
   const POLL_RUNNING_MS = 500;
-  const POLL_IDLE_MS = 800;
+  const POLL_IDLE_MS = 2500;
   const POLL_DOCK_MS = 2500;
-  const TICK_INTERVAL_MS = 250;
+  const POLL_SSE_ACTIVE_MS = 5000;
+  const POLL_SSE_IDLE_MS = 10000;
+  const TICK_INTERVAL_MS = 1000;
+  const SSE_BACKOFF_MIN_MS = 1500;
+  const SSE_BACKOFF_MAX_MS = 30000;
 
   /* ---------- Static Mode Visibility ---------- */
   el("popOutHudBtn").style.display = !isHudMode ? "inline-flex" : "none";
@@ -1056,7 +1059,6 @@
     viewMode: (initVmParam === "pill" || initVmParam === "stack") ? initVmParam : "pill",
     alwaysOnTop: true,
     opacity: 0.97,
-    theme: "light",
     width: HUD_DEFAULT_WIDTH,
     customHeight: null,
     x: null,
@@ -1086,8 +1088,14 @@
   let fastPollBoostUntil = 0;
   let lastPollCompletedAt = 0;
 
+  let sseSource = null;
+  let sseConnected = false;
+  let sseReconnectTimerId = null;
+  let sseBackoffMs = SSE_BACKOFF_MIN_MS;
+
   let lastRev = null;
   let lastFullPayload = null;
+  let lastPayloadCompact = false;
   let stackDomDirty = false;
   let isConnOffline = false;
   let earliestRecentExpireAtMs = 0;
@@ -1114,19 +1122,6 @@
   const cardRecords = new Map();
   const timerRegistry = new Map();
   const archivedRecentKeys = new Set();
-
-  const perfStats = {
-    pollsTotal: 0,
-    pollsShortCircuited: 0,
-    lastPollExecMs: 0,
-    stackRenders: 0,
-    pillShortCircuits: 0,
-    activeTimerRunning: false,
-    isCalm: true,
-    lastRev: null,
-    pollIntervalMs: POLL_IDLE_MS,
-  };
-  window.__FP_PERF__ = perfStats;
 
   /* ---------- Formatting Helpers ---------- */
   const num = (v, fb = 0) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : fb; };
@@ -1186,7 +1181,6 @@
     if (tickTimerId !== null) {
       clearInterval(tickTimerId);
       tickTimerId = null;
-      perfStats.activeTimerRunning = false;
     }
   }
 
@@ -1224,7 +1218,6 @@
     if (shouldRun) {
       if (tickTimerId === null) {
         tickTimerId = setInterval(tickElapsedTimers, TICK_INTERVAL_MS);
-        perfStats.activeTimerRunning = true;
       }
     } else {
       stopTickTimer();
@@ -1237,11 +1230,20 @@
       lastCalmClassState = shouldBeCalm;
       document.body.classList.toggle("is-calm", shouldBeCalm);
     }
-    perfStats.isCalm = shouldBeCalm;
   }
 
   function computeAdaptivePollInterval() {
-    if ((!isHudMode && hudRuntimeRunning) || (!isHudMode && document.hidden)) {
+    if (sseConnected) {
+      if (
+        document.hidden ||
+        (!isHudMode && hudRuntimeRunning) ||
+        (!lastHasLiveStream && lastRunningCount === 0 && lastAlertCount === 0)
+      ) {
+        return POLL_SSE_IDLE_MS;
+      }
+      return POLL_SSE_ACTIVE_MS;
+    }
+    if (document.hidden || (!isHudMode && hudRuntimeRunning)) {
       return POLL_DOCK_MS;
     }
     if (lastHasLiveStream || Date.now() < fastPollBoostUntil) {
@@ -1297,7 +1299,6 @@
     const tok = getAuthToken();
     if (tok) {
       headers.set("X-Flow-Pilot-Token", tok);
-      headers.set("X-Sidecar-Token", tok);
     }
     const resp = await fetch(path, { ...options, headers, cache: "no-store" });
     const text = await resp.text();
@@ -1320,7 +1321,6 @@
   let userResizeSaveTimer = null;
 
   function postNativeCmd(payload) {
-    window.__FP_LAST_NATIVE_CMD__ = payload;
     if (!isHudMode) return false;
     if (hasWebViewBridge()) {
       try {
@@ -1582,9 +1582,6 @@
   /* ---------- Light-Only Appearance & Opacity ---------- */
   let lastAppliedAlpha = "";
   function applyAppearance() {
-    if (document.documentElement.getAttribute("data-theme") !== "light") {
-      document.documentElement.setAttribute("data-theme", "light");
-    }
     const alphaStr = (isHudMode ? clamp(Number(hudPrefs.opacity) || 0.97, 0.72, 1) : 1).toFixed(2);
     if (alphaStr !== lastAppliedAlpha) {
       lastAppliedAlpha = alphaStr;
@@ -1791,15 +1788,6 @@
     const idleToggleEl = el("idleToggleBtn");
     const idleListEl = el("idleList");
 
-    if (!isHudMode) {
-      const noActive = idleFooterEl.classList.contains("no-active");
-      idleListEl.style.maxHeight = noActive ? "none" : "240px";
-      idleListEl.style.overflowY = noActive ? "visible" : "auto";
-      setDrawerEl.style.maxHeight = "none";
-      setDrawerEl.style.overflowY = "visible";
-      return { width: targetW, height: 480, lockTop: true, idleOpen: false, minHeight: HUD_STACK_MIN_H };
-    }
-
     const shellBorderH = 2;
     const pillH = measureBlockOuterH(el("pillShell"), 34);
     const setNaturalH = settingsOpen ? measureNaturalScrollBoxH(setDrawerEl) : 0;
@@ -1935,14 +1923,11 @@
 
   if (isHudMode && typeof ResizeObserver === "function") {
     const ro = new ResizeObserver(() => {
-      if (!isUserNativeResizing && hudPrefs.viewMode === "stack" && !document.hidden) {
+      if (!isUserNativeResizing && settingsOpen && hudPrefs.viewMode === "stack" && !document.hidden) {
         scheduleHudResize();
       }
     });
-    ro.observe(el("stackList"));
     ro.observe(el("settingsDrawer"));
-    ro.observe(el("idleFooter"));
-    ro.observe(el("idleList"));
   }
 
   /* ---------- Bind 8-Way Resize Handles & Unified Pill Interactions ---------- */
@@ -1980,6 +1965,9 @@
     el("pillSettingsBtn").classList.toggle("active", settingsOpen);
     if (lastFullPayload) {
       renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
+      if (lastPayloadCompact && !shouldRequestCompact()) {
+        pollNow(true);
+      }
       return;
     }
     const shouldExpand = Boolean(settingsOpen);
@@ -1998,6 +1986,9 @@
       embedCollapsed = !shouldExpand;
       el("capsuleUnit").classList.toggle("expanded", shouldExpand);
     }
+    if (lastPayloadCompact && !shouldRequestCompact()) {
+      pollNow(true);
+    }
   }
 
   function toggleCapsuleExpandCollapse() {
@@ -2008,7 +1999,7 @@
       else manualIdleExpanded = false;
     } else {
       if (lastHasActiveCards) manualActiveCollapsed = false;
-      else if (lastIdleCandidates.length > 0) manualIdleExpanded = true;
+      else if (lastIdleCandidates.length > 0 || lastTotalIdleCount > 0) manualIdleExpanded = true;
       else return;
     }
     syncExpansionStateAfterUserAction();
@@ -3368,12 +3359,13 @@
     renderCardSubagents(rec);
   }
 
-  /* ---------- Synchronous 0ms Idle List Renderer ---------- */
+  /* ---------- Lazy Idle List Renderer (Deferred in HUD Mode) ---------- */
   function renderIdleListDom(hasActive, showIdleStandalone = false) {
     const idleFooter = el("idleFooter");
     const idleToggleBtn = el("idleToggleBtn");
     const idleList = el("idleList");
-    if ((!hasActive && !showIdleStandalone) || lastIdleCandidates.length === 0) {
+    const displayIdleCnt = Math.max(lastTotalIdleCount, lastIdleCandidates.length);
+    if ((!hasActive && !showIdleStandalone) || displayIdleCnt === 0) {
       idleFooter.classList.remove("visible", "no-active");
       idleList.classList.remove("open");
       if (idleList.dataset.sig) {
@@ -3388,32 +3380,40 @@
     idleFooter.classList.toggle("no-active", noActive);
     idleToggleBtn.style.display = noActive ? "none" : "flex";
 
-    const showList = noActive || idleDrawerOpen;
+    const idleOpen = Boolean(idleDrawerOpen);
+    const showList = isHudMode
+      ? Boolean(idleOpen || (noActive && showIdleStandalone))
+      : Boolean(noActive || idleOpen);
     if (!noActive) {
-      const displayIdleCnt = Math.max(lastTotalIdleCount, lastIdleCandidates.length);
       setTextIfChanged(el("idleSummaryLabel"), `🕒 历史空闲 ${displayIdleCnt}`);
-      setTextIfChanged(el("idleChevron"), idleDrawerOpen ? "收起 ▴" : "展开 ▾");
+      setTextIfChanged(el("idleChevron"), idleOpen ? "收起 ▴" : "展开 ▾");
     }
     idleList.classList.toggle("open", showList);
 
-    if (showList) {
-      const topIdle = lastIdleCandidates.slice(0, 24);
-      const sig = topIdle.map((t) => `${t.cid}:${t.title}:${t.workspaceName}:${t.isPinned}:${t.modelLabel}:${t.tokenUsage.netTokens}:${t.tokenUsage.hasCacheData ? Math.round(t.tokenUsage.cacheHitPct) : "x"}:${!isHudMode && hostConversationId === t.cid ? 1 : 0}`).join("|");
-      if (idleList.dataset.sig !== sig) {
-        idleList.dataset.sig = sig;
-        idleList.innerHTML = topIdle.map((t) => {
-          const tu = t.tokenUsage;
-          const metaStr = `${fmtTok(tu.netTokens)} · 缓存 ${tu.hasCacheData ? Math.round(tu.cacheHitPct) + "%" : "--"}`;
-          const isFocused = !isHudMode && hostConversationId && t.cid === hostConversationId;
-          return (
-            `<div class="idle-item${isFocused ? " host-focused" : ""}" data-cid="${esc(t.cid)}">` +
-              `<span class="idle-item-title">${t.workspaceName ? `[${esc(t.workspaceName)}] ` : ""}${esc(t.title)}</span>` +
-              `<span class="idle-item-meta mono-num">${metaStr}</span>` +
-              `<button class="tiny-icon-btn idle-pin-btn" data-pin-cid="${esc(t.cid)}" type="button" title="固定至主栈">☆</button>` +
-            `</div>`
-          );
-        }).join("");
+    if (!showList) {
+      if (isHudMode && idleList.dataset.sig) {
+        idleList.dataset.sig = "";
+        idleList.innerHTML = "";
       }
+      return;
+    }
+
+    const topIdle = lastIdleCandidates.slice(0, 24);
+    const sig = topIdle.map((t) => `${t.cid}:${t.title}:${t.workspaceName}:${t.isPinned}:${t.modelLabel}:${t.tokenUsage.netTokens}:${t.tokenUsage.hasCacheData ? Math.round(t.tokenUsage.cacheHitPct) : "x"}:${!isHudMode && hostConversationId === t.cid ? 1 : 0}`).join("|");
+    if (idleList.dataset.sig !== sig) {
+      idleList.dataset.sig = sig;
+      idleList.innerHTML = topIdle.map((t) => {
+        const tu = t.tokenUsage;
+        const metaStr = `${fmtTok(tu.netTokens)} · 缓存 ${tu.hasCacheData ? Math.round(tu.cacheHitPct) + "%" : "--"}`;
+        const isFocused = !isHudMode && hostConversationId && t.cid === hostConversationId;
+        return (
+          `<div class="idle-item${isFocused ? " host-focused" : ""}" data-cid="${esc(t.cid)}">` +
+            `<span class="idle-item-title">${t.workspaceName ? `[${esc(t.workspaceName)}] ` : ""}${esc(t.title)}</span>` +
+            `<span class="idle-item-meta mono-num">${metaStr}</span>` +
+            `<button class="tiny-icon-btn idle-pin-btn" data-pin-cid="${esc(t.cid)}" type="button" title="固定至主栈">☆</button>` +
+          `</div>`
+        );
+      }).join("");
     }
   }
 
@@ -3478,7 +3478,9 @@
       fastIoStats.savedSecEstimate = num(st.savedSecEstimate, fastIoStats.savedSecEstimate);
     }
 
-    const hw = payload.hudWindow && typeof payload.hudWindow === "object" ? payload.hudWindow : {};
+    const hw = (payload.hudWindow && typeof payload.hudWindow === "object")
+      ? payload.hudWindow
+      : ((payload.hudRuntime && typeof payload.hudRuntime === "object") ? payload.hudRuntime : {});
     const cfgHud = cfg.hud && typeof cfg.hud === "object" ? cfg.hud : {};
     if (!opts.localOnlyPrefs) {
       hudRuntimeRunning = Boolean(hw.running || hw.visible);
@@ -3488,7 +3490,6 @@
       const src = { ...cfgHud, ...hw };
       if (typeof src.alwaysOnTop === "boolean") hudPrefs.alwaysOnTop = src.alwaysOnTop;
       if (typeof src.opacity === "number" && src.opacity >= 0.5 && src.opacity <= 1) hudPrefs.opacity = src.opacity;
-      hudPrefs.theme = "light";
       if (typeof src.width === "number" && src.width >= HUD_MIN_WIDTH && src.width <= HUD_MAX_WIDTH) hudPrefs.width = Math.round(src.width);
       if (src.customHeight === null || src.customHeight === 0) hudPrefs.customHeight = null;
       else if (typeof src.customHeight === "number" && src.customHeight >= HUD_STACK_MIN_H && src.customHeight <= HUD_CUSTOM_MAX_H) hudPrefs.customHeight = Math.round(src.customHeight);
@@ -3564,26 +3565,30 @@
     const totalLiveTps = sumRaw && sumRaw.totalLiveTps !== undefined ? num(sumRaw.totalLiveTps, calcLiveTps) : calcLiveTps;
     const anyGlobalWaitingTtft = sumRaw && sumRaw.anyWaitingTtft !== undefined ? Boolean(sumRaw.anyWaitingTtft) : calcWaitTtft;
     const anyGlobalGenerating = sumRaw && sumRaw.anyGenerating !== undefined ? Boolean(sumRaw.anyGenerating) : calcAnyGen;
-    const totalTaskCount = allTasks.length > 0
+    const summaryIdleCount = (sumRaw && sumRaw.idleCount !== undefined)
+      ? Math.round(num(sumRaw.idleCount, 0))
+      : idleCandidates.length;
+    const isCompactPayload = Boolean(payload.compact || lastPayloadCompact);
+    const totalTaskCount = (!isCompactPayload && allTasks.length > 0)
       ? allTasks.length
-      : (sumRaw && sumRaw.idleCount !== undefined ? (alertCount + runningCount + recentCount + Math.round(num(sumRaw.idleCount, 0))) : 0);
+      : Math.max(allTasks.length, alertCount + runningCount + recentCount + summaryIdleCount);
 
     lastIdleCandidates = idleCandidates;
-    lastTotalIdleCount = idleCandidates.length;
-    const hasActiveCards = activeCandidates.length > 0;
+    lastTotalIdleCount = Math.max(idleCandidates.length, summaryIdleCount);
+    const hasActiveCards = activeCandidates.length > 0 || (isCompactPayload && (runningCount > 0 || alertCount > 0));
 
     if (prevHadActiveCards !== hasActiveCards) {
       manualIdleExpanded = false;
       manualActiveCollapsed = false;
       prevHadActiveCards = hasActiveCards;
     }
-    if (idleCandidates.length === 0) {
+    if (lastTotalIdleCount === 0) {
       manualIdleExpanded = false;
     }
     lastHasActiveCards = hasActiveCards;
 
     const showActiveStack = hasActiveCards && !manualActiveCollapsed;
-    const showIdleStandalone = !hasActiveCards && manualIdleExpanded && idleCandidates.length > 0;
+    const showIdleStandalone = !hasActiveCards && manualIdleExpanded && lastTotalIdleCount > 0;
     const shouldBeExpanded = Boolean(settingsOpen || showActiveStack || showIdleStandalone);
     const isCollapsed = !shouldBeExpanded;
 
@@ -3636,7 +3641,6 @@
             if (lastFullPayload) {
               renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
               pollIntervalMs = computeAdaptivePollInterval();
-              perfStats.pollIntervalMs = pollIntervalMs;
               syncTickTimer();
               syncCalmAnimationFreeze();
             }
@@ -3673,7 +3677,6 @@
       syncTickTimer();
       syncCalmAnimationFreeze();
       pollIntervalMs = computeAdaptivePollInterval();
-      perfStats.pollIntervalMs = pollIntervalMs;
       return;
     }
 
@@ -3701,7 +3704,7 @@
     }
 
     const pill = el("pillShell");
-    pill.classList.toggle("no-expand", !hasActiveCards && idleCandidates.length === 0 && !settingsOpen);
+    pill.classList.toggle("no-expand", !hasActiveCards && lastTotalIdleCount === 0 && !settingsOpen);
     pill.classList.toggle("idle-dim", isCollapsed && alertCount === 0 && runningCount === 0);
     el("pillDot").className = "pill-dot" + (alertCount > 0 ? " alert" : (runningCount > 0 ? " running" : ""));
 
@@ -3744,19 +3747,16 @@
         renderIdleListDom(false, false);
       }
       stackDomDirty = showActiveStack;
-      perfStats.pillShortCircuits++;
       timerRegistry.clear();
       syncTickTimer();
       syncCalmAnimationFreeze();
       pollIntervalMs = computeAdaptivePollInterval();
-      perfStats.pollIntervalMs = pollIntervalMs;
       if (isHudMode) scheduleHudResize();
       return;
     }
 
     /* Expanded Rendering (HUD Stack or Embedded Standalone) */
     stackDomDirty = false;
-    perfStats.stackRenders++;
     renderFastIoStatusUI();
 
     const stackScroll = el("stackScroll");
@@ -3800,11 +3800,103 @@
     syncTickTimer();
     syncCalmAnimationFreeze();
     pollIntervalMs = computeAdaptivePollInterval();
-    perfStats.pollIntervalMs = pollIntervalMs;
     scheduleHudResize();
+
+    if (lastPayloadCompact && !shouldRequestCompact()) {
+      pollNow(true);
+    }
   }
 
-  /* ---------- Adaptive Non-Overlapping Poller with sinceRev Short-Circuit ---------- */
+  /* ---------- Real-Time SSE + Adaptive Non-Overlapping Poller ---------- */
+  function shouldRequestCompact() {
+    if (settingsOpen || idleDrawerOpen || manualIdleExpanded) return false;
+    if (!isHudMode) {
+      return Boolean(hudRuntimeRunning || embedCollapsed);
+    }
+    return hudPrefs.viewMode === "pill";
+  }
+
+  function buildEventsUrl() {
+    const tok = getAuthToken();
+    return tok ? `/api/events?token=${encodeURIComponent(tok)}` : "/api/events";
+  }
+
+  function closeEventStream() {
+    if (sseReconnectTimerId !== null) {
+      clearTimeout(sseReconnectTimerId);
+      sseReconnectTimerId = null;
+    }
+    if (sseSource) {
+      try { sseSource.close(); } catch (_) {}
+      sseSource = null;
+    }
+    sseConnected = false;
+  }
+
+  function scheduleSseReconnect() {
+    if (sseReconnectTimerId !== null || typeof EventSource !== "function") return;
+    const delay = sseBackoffMs;
+    sseBackoffMs = Math.min(SSE_BACKOFF_MAX_MS, Math.round(sseBackoffMs * 1.8));
+    sseReconnectTimerId = setTimeout(() => {
+      sseReconnectTimerId = null;
+      connectEventStream();
+    }, delay);
+  }
+
+  function connectEventStream() {
+    if (typeof EventSource !== "function" || sseSource) return;
+    if (sseReconnectTimerId !== null) {
+      clearTimeout(sseReconnectTimerId);
+      sseReconnectTimerId = null;
+    }
+    let es;
+    try {
+      es = new EventSource(buildEventsUrl());
+    } catch (_) {
+      sseConnected = false;
+      scheduleSseReconnect();
+      return;
+    }
+    sseSource = es;
+    es.onopen = () => {
+      if (sseSource !== es) return;
+      sseConnected = true;
+      sseBackoffMs = SSE_BACKOFF_MIN_MS;
+      pollIntervalMs = computeAdaptivePollInterval();
+      if (!pollInFlight) scheduleNextPoll(pollIntervalMs);
+    };
+    es.addEventListener("rev", (ev) => {
+      if (sseSource !== es) return;
+      if (!sseConnected) {
+        sseConnected = true;
+        sseBackoffMs = SSE_BACKOFF_MIN_MS;
+        pollIntervalMs = computeAdaptivePollInterval();
+      }
+      let revVal = null;
+      try {
+        const parsed = ev && ev.data ? JSON.parse(ev.data) : null;
+        if (parsed && parsed.rev !== undefined && parsed.rev !== null) {
+          revVal = parsed.rev;
+        }
+      } catch (_) {}
+      if (revVal !== null && revVal !== lastRev) {
+        pollNow(true);
+      }
+    });
+    es.onerror = () => {
+      if (sseSource !== es) return;
+      const wasConnected = sseConnected;
+      sseConnected = false;
+      try { es.close(); } catch (_) {}
+      sseSource = null;
+      pollIntervalMs = computeAdaptivePollInterval();
+      if (wasConnected && !pollInFlight) {
+        scheduleNextPoll(Math.min(pollIntervalMs, 1000));
+      }
+      scheduleSseReconnect();
+    };
+  }
+
   function scheduleNextPoll(delayMs) {
     if (pollTimerId !== null) clearTimeout(pollTimerId);
     const wait = typeof delayMs === "number" ? delayMs : pollIntervalMs;
@@ -3832,10 +3924,18 @@
       forceFull = true;
     }
 
+    const wantCompact = shouldRequestCompact();
+    if (lastPayloadCompact && !wantCompact) {
+      forceFull = true;
+    }
+
     try {
       let query = "";
       if (!isHudMode && hostConversationId) {
         query = `hintConversationId=${encodeURIComponent(hostConversationId)}`;
+      }
+      if (wantCompact) {
+        query += (query ? "&" : "") + "compact=1";
       }
       if (!forceFull && lastRev !== null && lastFullPayload !== null && !stackDomDirty) {
         query += (query ? "&" : "") + `sinceRev=${encodeURIComponent(String(lastRev))}`;
@@ -3843,8 +3943,6 @@
 
       const data = await apiFetch(query ? `/api/tasks?${query}` : "/api/tasks");
 
-      const t0 = performance.now();
-      perfStats.pollsTotal++;
       lastPollCompletedAt = Date.now();
 
       if (isConnOffline) {
@@ -3852,11 +3950,14 @@
         el("connDot").classList.remove("offline");
         el("dockConnDot").classList.remove("offline");
         el("connDot").title = "实时流运行正常";
+        if (!sseSource) {
+          sseBackoffMs = SSE_BACKOFF_MIN_MS;
+          connectEventStream();
+        }
       }
 
       if (data && data.rev !== undefined && data.rev !== null) {
         lastRev = data.rev;
-        perfStats.lastRev = lastRev;
       }
 
       if (data && data.unchanged === true && lastFullPayload !== null && !stackDomDirty) {
@@ -3870,23 +3971,17 @@
           heldDropPolls = 0;
           renderMultiTasks(lastFullPayload, { localOnlyPrefs: true });
         }
-        perfStats.pollsShortCircuited++;
         pollIntervalMs = computeAdaptivePollInterval();
-        perfStats.pollIntervalMs = pollIntervalMs;
         syncTickTimer();
         syncCalmAnimationFreeze();
-        const dt = +(performance.now() - t0).toFixed(4);
-        perfStats.lastPollExecMs = dt;
-        perfStats.lastUnchangedExecMs = dt;
         return;
       }
 
+      lastPayloadCompact = Boolean(wantCompact && data && data.compact !== false);
       lastFullPayload = data;
       renderMultiTasks(data);
-      perfStats.lastPollExecMs = +(performance.now() - t0).toFixed(4);
     } catch (err) {
       pollIntervalMs = POLL_IDLE_MS;
-      perfStats.pollIntervalMs = pollIntervalMs;
       if (!isConnOffline) {
         isConnOffline = true;
         el("connDot").classList.add("offline");
@@ -3963,7 +4058,7 @@
   }
 
   async function saveHudPrefs(patch, action = "update_prefs") {
-    Object.assign(hudPrefs, patch, { theme: "light" });
+    Object.assign(hudPrefs, patch);
     prefsDirtyUntil = Date.now() + 1800;
     applyAppearance();
     syncSettingControlsUI();
@@ -4087,9 +4182,12 @@
     idleDrawerOpen = !idleDrawerOpen;
     renderIdleListDom(
       Boolean(lastHasActiveCards && !manualActiveCollapsed),
-      Boolean(!lastHasActiveCards && manualIdleExpanded && lastIdleCandidates.length > 0)
+      Boolean(!lastHasActiveCards && manualIdleExpanded && lastTotalIdleCount > 0)
     );
     scheduleHudResize();
+    if (idleDrawerOpen && lastPayloadCompact) {
+      pollNow(true);
+    }
   });
 
   el("idleList").addEventListener("click", (e) => {
@@ -4117,8 +4215,11 @@
     syncTickTimer();
     syncCalmAnimationFreeze();
     pollIntervalMs = computeAdaptivePollInterval();
-    perfStats.pollIntervalMs = pollIntervalMs;
     if (!document.hidden) {
+      if (!sseSource && !sseConnected) {
+        sseBackoffMs = SSE_BACKOFF_MIN_MS;
+        connectEventStream();
+      }
       if (isHudMode) scheduleHudResize();
       pollNow(false);
     }
@@ -4126,6 +4227,7 @@
   window.addEventListener("focus", () => {
     if (Date.now() - lastPollCompletedAt > 450) pollNow(false);
   });
+  window.addEventListener("beforeunload", closeEventStream);
 
   el("capsuleUnit").classList.add("visible");
   el("capsuleUnit").classList.remove("expanded");
@@ -4134,6 +4236,7 @@
   renderFastIoStatusUI();
   syncCalmAnimationFreeze();
   pollNow(true);
+  connectEventStream();
 })();
   </script>
 </body>

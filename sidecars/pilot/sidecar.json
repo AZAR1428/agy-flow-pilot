@@ -1,12 +1,14 @@
 {
   "command": "python",
   "args": [
+    "-S",
+    "-B",
     "-u",
     "server.py"
   ],
   "restart_policy": "always",
   "display_name": "Flow Pilot",
-  "description": "科学仪器级轻量多任务悬浮窗、三级实时 tok/s 测速、Fast I/O 加速与断流自愈中枢",
+  "description": "科学仪器级轻量多任务遥测面板与桌面悬浮窗、三级实时 tok/s 测速、Fast I/O 加速与只读感知手动控流中心",
   "has_web_ui": true,
   "agent_permissions": {
     "allows_user_interactions": false

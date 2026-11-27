@@ -1,8 +1,8 @@
 {
   "name": "agy-flow-pilot",
   "displayName": "Flow Pilot (HUD Telemetry & Fast I/O Suite)",
-  "version": "3.8.3",
-  "description": "Flow Pilot 侧边栏遥测面板与浅色统一胶囊桌面悬浮窗及 Fast I/O 零溢盘引擎：支持多任务/蜂群/子代理实时 tok/s 测速、上下文膨胀主因与缓存悬崖告警、异常/挂起只读感知与手动中断唤醒，以及 <=8.8KB Eager Fast I/O 多查询检索与骨架提取 MCP（支持 Google Antigravity sidecar://agy-flow-pilot/pilot/ 一键唤起面板）。",
+  "version": "3.9.0",
+  "description": "Flow Pilot 实时遥测侧边栏、按需桌面胶囊悬浮窗与零溢盘 Fast I/O 引擎：零 Hook 同步税，基于 SSE 实时推送多任务/蜂群/子代理 tok/s 测速、上下文膨胀主因与缓存悬崖告警，提供异常/挂起只读感知与手动中断唤醒，以及 3 工具（grep/glob_tree/outline）<=8.8KB Eager Fast I/O MCP（支持 Google Antigravity sidecar://agy-flow-pilot/pilot/ 一键唤起面板）。",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "打开 Flow Pilot 面板查看当前任务与蜂群各节点的实时 tok/s 速率、上下文膨胀主因及缓存命中状态",

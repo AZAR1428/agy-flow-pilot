@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.8.3."""
+"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.9.0."""
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import sys
+
+sys.dont_write_bytecode = True
+
 import datetime
 import hmac
+import http.client
 import json
 import os
 import secrets
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
-
-sys.dont_write_bytecode = True
 
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
@@ -30,7 +30,7 @@ if str(THIS_DIR) not in sys.path:
 
 from engine import FlowPilotEngine, _stat_mtime_ns  # noqa: E402
 
-APP_VERSION = "3.8.3"
+APP_VERSION = "3.9.0"
 HUD_MUTEX_NAME = "Local\\AgyFlowPilot_DesktopHud_SingleInstance_v2"
 CREATE_NO_WINDOW = 0x08000000
 _FALLBACK_HTML = (
@@ -162,9 +162,10 @@ def _find_edge_executable() -> Optional[Path]:
 
 
 class _PeerNodeCoordinator:
-    """Maintains <PLUGIN_DATA>/nodes/<lsInstanceId>.json (15s cadence / 45s TTL) with zero-read single-node fast path."""
+    """Maintains <PLUGIN_DATA>/nodes/<lsInstanceId>.json (35s single-window / 15s multi-window / 45s TTL) with dir_mtime_ns gating."""
 
     HEARTBEAT_INTERVAL_SEC = 15.0
+    SINGLE_WINDOW_HEARTBEAT_INTERVAL_SEC = 35.0
     NODE_ALIVE_TTL_SEC = 45.0
     STALE_CLEANUP_TTL_SEC = 50.0
 
@@ -186,7 +187,6 @@ class _PeerNodeCoordinator:
         self._cluster_rev = 0
         self._last_cluster_calm_fp: Any = None
         self._thread: Optional[threading.Thread] = None
-        self._pool: Optional[ThreadPoolExecutor] = None
 
     def _make_self_payload(self, owns_hud: bool, now: float) -> dict[str, Any]:
         return {
@@ -195,14 +195,8 @@ class _PeerNodeCoordinator:
             "ownsHud": owns_hud, "peerToken": self.peer_token, "updatedAt": round(now, 3),
         }
 
-    def _get_pool(self) -> ThreadPoolExecutor:
-        with self._lock:
-            if self._pool is None:
-                self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pilot-peer")
-            return self._pool
-
     def start(self) -> None:
-        self.write_heartbeat(owns_hud=False)
+        self.write_heartbeat(owns_hud=False, force_scan=True)
         self._thread = threading.Thread(target=self._heartbeat_loop, name="flow-pilot-node-reg", daemon=True)
         self._thread.start()
 
@@ -212,13 +206,6 @@ class _PeerNodeCoordinator:
             self.node_file.unlink(missing_ok=True)
         except OSError:
             pass
-        with self._lock:
-            pool, self._pool = self._pool, None
-        if pool is not None:
-            try:
-                pool.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
 
     def set_owns_hud(self, owns: bool) -> None:
         with self._lock:
@@ -227,18 +214,40 @@ class _PeerNodeCoordinator:
             self._owns_hud = owns
         self.write_heartbeat(owns_hud=owns)
 
-    def write_heartbeat(self, owns_hud: Optional[bool] = None, cleanup_stale: bool = False) -> None:
+    def write_heartbeat(self, owns_hud: Optional[bool] = None, cleanup_stale: bool = False, force_scan: bool = False) -> None:
         now = time.time()
+        dir_str = str(self.engine.nodes_dir)
+        pre_dir_ns = _stat_mtime_ns(dir_str)
         with self._lock:
             if owns_hud is not None:
                 self._owns_hud = owns_hud
             payload = self._make_self_payload(self._owns_hud, now)
             self._self_node = payload
+            can_skip_scan = (
+                not force_scan
+                and not self._remote_peers
+                and pre_dir_ns > 0
+                and pre_dir_ns == self._nodes_dir_mtime_ns
+            )
         self.engine._write_json_atomic(self.node_file, payload)
-        self._scan_remote_nodes_if_needed(force=True, now=now, cleanup_stale=cleanup_stale)
+        if can_skip_scan:
+            post_dir_ns = _stat_mtime_ns(dir_str)
+            with self._lock:
+                self._nodes_dir_mtime_ns = post_dir_ns
+                self._last_scandir_at = self._peers_verified_at = now
+            return
+        self._scan_remote_nodes_if_needed(
+            force=bool(force_scan or (pre_dir_ns != self._nodes_dir_mtime_ns)),
+            now=now,
+            cleanup_stale=cleanup_stale,
+        )
 
     def _heartbeat_loop(self) -> None:
-        while not self._stop_event.wait(self.HEARTBEAT_INTERVAL_SEC):
+        while True:
+            with self._lock:
+                interval = self.HEARTBEAT_INTERVAL_SEC if self._remote_peers else self.SINGLE_WINDOW_HEARTBEAT_INTERVAL_SEC
+            if self._stop_event.wait(interval):
+                break
             try:
                 self.write_heartbeat(cleanup_stale=True)
             except Exception:
@@ -329,18 +338,59 @@ class _PeerNodeCoordinator:
         addr, tok = str(peer.get("sidecarAddr") or "").strip(), str(peer.get("peerToken") or "").strip()
         if not addr or addr == self.sidecar_addr:
             return None
+        if ":" in addr:
+            host, port_s = addr.rsplit(":", 1)
+            try:
+                port = int(port_s)
+            except ValueError:
+                return None
+        else:
+            host, port = addr, 80
+        host = host.strip("[]")
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8") if body is not None else None
-        headers = {"Accept": "application/json", "X-Peer-Token": tok}
+        headers = {"Accept": "application/json", "X-Peer-Token": tok, "Connection": "close"}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(f"http://{addr}{path}", data=data, headers=headers, method=method.upper())
+        conn: Optional[http.client.HTTPConnection] = None
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-                parsed = json.loads(raw.decode("utf-8", errors="replace")) if raw else {}
-                return parsed if isinstance(parsed, dict) else None
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+            conn.request(method.upper(), path, body=data, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status >= 400:
+                return None
+            parsed = json.loads(raw.decode("utf-8", errors="replace")) if raw else {}
+            return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _fetch_peers_parallel(self, peers: list[dict[str, Any]], path: str, timeout: float = 1.2) -> list[Optional[dict[str, Any]]]:
+        results: list[Optional[dict[str, Any]]] = [None] * len(peers)
+        threads: list[threading.Thread] = []
+
+        def _worker(idx: int, peer_obj: dict[str, Any]) -> None:
+            try:
+                results[idx] = self.request_peer(peer_obj, "GET", path, None, timeout=timeout)
+            except Exception:
+                results[idx] = None
+
+        for idx, peer_obj in enumerate(peers):
+            t = threading.Thread(target=_worker, args=(idx, peer_obj), name="pilot-peer-req", daemon=True)
+            threads.append(t)
+            t.start()
+
+        deadline = time.monotonic() + timeout + 0.15
+        for t in threads:
+            rem = deadline - time.monotonic()
+            if rem > 0.0:
+                t.join(timeout=rem)
+        return results
 
     _BUCKET_MERGE_RANK: dict[str, int] = {
         "IDLE": 0,
@@ -376,17 +426,12 @@ class _PeerNodeCoordinator:
         if not remote_peers:
             return local_payload
 
-        pool = self._get_pool()
-        futures = [pool.submit(self.request_peer, peer, "GET", "/api/node-tasks", None, 1.2) for peer in remote_peers]
+        peer_results = self._fetch_peers_parallel(remote_peers, "/api/node-tasks", timeout=1.2)
         by_cid: dict[str, dict[str, Any]] = {
             str(t["conversationId"]): t for t in (local_payload.get("tasks") or []) if isinstance(t, dict) and t.get("conversationId")
         }
         peer_revs: list[int] = [int(local_payload.get("rev") or 0)]
-        for fut in futures:
-            try:
-                peer_res = fut.result(timeout=1.35)
-            except Exception:
-                peer_res = None
+        for peer_res in peer_results:
             if not isinstance(peer_res, dict) or not peer_res.get("ok"):
                 continue
             peer_revs.append(int(peer_res.get("rev") or 0))
@@ -403,13 +448,19 @@ class _PeerNodeCoordinator:
         local_payload["tasks"] = merged_tasks
         local_payload["summary"] = summary_block
 
-        calm_fp = (
+        cluster_fp = (
             tuple(peer_revs),
+            summary_block["runningCount"],
+            summary_block["alertCount"],
+            summary_block["totalLiveTps"],
+            bool(summary_block["anyWaitingTtft"]),
+            bool(summary_block.get("anyGenerating")),
             tuple(
                 (
                     t.get("taskKey"),
                     t.get("bucket"),
                     t.get("status"),
+                    t.get("effectiveLiveTps", 0.0),
                     (t.get("heartbeat") or {}).get("state"),
                     bool((t.get("heartbeat") or {}).get("isStalled")),
                     (t.get("heartbeat") or {}).get("runningStepIndex"),
@@ -419,15 +470,8 @@ class _PeerNodeCoordinator:
         )
         with self._lock:
             base_rev = max(self._cluster_rev, int(local_payload.get("rev") or 1))
-            if (
-                summary_block["runningCount"] > 0
-                or summary_block["anyWaitingTtft"]
-                or summary_block.get("anyGenerating")
-                or summary_block["totalLiveTps"] > 0
-            ):
-                self._cluster_rev, self._last_cluster_calm_fp = base_rev + 1, None
-            elif calm_fp != self._last_cluster_calm_fp or self._cluster_rev <= 0:
-                self._last_cluster_calm_fp, self._cluster_rev = calm_fp, base_rev + 1
+            if cluster_fp != self._last_cluster_calm_fp or self._cluster_rev <= 0:
+                self._last_cluster_calm_fp, self._cluster_rev = cluster_fp, base_rev + 1
             local_payload["rev"] = self._cluster_rev
         return local_payload
 
@@ -573,6 +617,9 @@ class _DesktopHudManager:
         self._thread.start()
         self._wake_event.set()
 
+    def notify_config_changed(self) -> None:
+        self._wake_event.set()
+
     def stop(self) -> None:
         self._stop_event.set()
         self._wake_event.set()
@@ -684,6 +731,15 @@ class _DesktopHudManager:
             self.peer_coord.set_owns_hud(True)
             self.engine.bump_rev()
             self._log_hud_event("spawn_ok", pid=proc.pid, hostKind=kind, port=self.bound_port)
+
+            def _watch_child_exit(p: subprocess.Popen[bytes]) -> None:
+                try:
+                    p.wait()
+                except Exception:
+                    pass
+                self._wake_event.set()
+
+            threading.Thread(target=_watch_child_exit, args=(proc,), name="flow-pilot-hud-wait", daemon=True).start()
             return True
         except Exception as exc:
             self._log_hud_event("spawn_failed", error=f"{type(exc).__name__}:{exc}", hostKind=kind)
@@ -691,8 +747,10 @@ class _DesktopHudManager:
 
     def _supervisor_loop(self) -> None:
         while not self._stop_event.is_set():
+            self._wake_event.clear()
+            wait_timeout: Optional[float] = 10.0
             try:
-                enabled = bool((self.engine.get_config_snapshot().get("hud") or {}).get("enabled", True))
+                enabled = bool((self.engine.get_config_snapshot().get("hud") or {}).get("enabled", False))
                 now = time.time()
                 exited_proc: Optional[subprocess.Popen[bytes]] = None
                 exited_pid = 0
@@ -747,9 +805,12 @@ class _DesktopHudManager:
                         self._terminate_local_child(reason="config_disabled")
                         self.engine.bump_rev()
                     self.peer_coord.set_owns_hud(False)
+                    # Zero CPU wakeups while HUD is disabled and child is not running.
+                    wait_timeout = None
                 elif local_alive:
                     self._unexpected_exit_block_pending = False
                     self.peer_coord.set_owns_hud(True)
+                    wait_timeout = 10.0
                 else:
                     self.peer_coord.set_owns_hud(False)
                     mutex_held = WIN32.is_mutex_held(HUD_MUTEX_NAME)
@@ -757,24 +818,33 @@ class _DesktopHudManager:
                         if not self._logged_disable_spawn:
                             self._logged_disable_spawn = True
                             self._log_hud_event("spawn_blocked", reason="disable_spawn", mutex_held=mutex_held)
+                        wait_timeout = None
                     elif mutex_held:
                         if self._unexpected_exit_block_pending:
                             self._unexpected_exit_block_pending = False
                             self._log_hud_event("spawn_blocked", reason="mutex_held_after_unexpected_exit", last_exit_code=self._last_exit_code)
+                        wait_timeout = 5.0
                     elif now >= self._next_retry_at:
                         if not self.peer_coord.is_election_leader():
                             if self._stop_event.wait(0.6):
                                 break
                             mutex_held = WIN32.is_mutex_held(HUD_MUTEX_NAME)
-                        if not mutex_held and bool((self.engine.get_config_snapshot().get("hud") or {}).get("enabled", True)):
-                            self._spawn_hud_child_once()
+                        if not mutex_held and bool((self.engine.get_config_snapshot().get("hud") or {}).get("enabled", False)):
+                            spawned = self._spawn_hud_child_once()
+                            wait_timeout = 10.0 if spawned else 2.0
                         elif mutex_held and self._unexpected_exit_block_pending:
                             self._unexpected_exit_block_pending = False
                             self._log_hud_event("spawn_blocked", reason="mutex_held_after_unexpected_exit", last_exit_code=self._last_exit_code)
+                            wait_timeout = 5.0
+                        else:
+                            wait_timeout = 5.0
+                    else:
+                        wait_timeout = max(0.2, min(10.0, self._next_retry_at - now))
             except Exception:
-                pass
-            self._wake_event.wait(timeout=2.0)
-            self._wake_event.clear()
+                wait_timeout = 2.0
+            if self._stop_event.is_set():
+                break
+            self._wake_event.wait(timeout=wait_timeout)
 
     def _compute_running_fast(self) -> tuple[bool, bool, int, str]:
         with self._lock:
@@ -827,14 +897,12 @@ class _DesktopHudManager:
                 target = nodes[0]
         if target is not None:
             try:
-                self.peer_coord._get_pool().submit(
-                    self.peer_coord.request_peer,
-                    target,
-                    "POST",
-                    "/api/hud?localOnly=1",
-                    {"action": "open", "enabled": True, "source": f"peer:{source}"},
-                    1.0,
-                )
+                threading.Thread(
+                    target=self.peer_coord.request_peer,
+                    args=(target, "POST", "/api/hud?localOnly=1", {"action": "open", "enabled": True, "source": f"peer:{source}"}, 1.0),
+                    name="pilot-peer-hud-open",
+                    daemon=True,
+                ).start()
             except Exception:
                 pass
 
@@ -844,7 +912,7 @@ class _DesktopHudManager:
     def handle_action(self, body: dict[str, Any], local_only: bool = False) -> dict[str, Any]:
         action = str(body.get("action") or "update_prefs").strip().lower()
         source = str(body.get("source") or "api").strip() or "api"
-        enabled_before = bool((self.engine.get_config_snapshot().get("hud") or {}).get("enabled", True))
+        enabled_before = bool((self.engine.get_config_snapshot().get("hud") or {}).get("enabled", False))
         if action == "dismiss_recent":
             self.engine.dismiss_recent(str(body.get("conversationId") or "").strip())
             return {"ok": True, "action": action, "hudWindow": self.get_status()}
@@ -868,13 +936,10 @@ class _DesktopHudManager:
             self._wake_event.set()
             if not local_only and self.peer_coord.has_remote_peers():
                 self._wake_remote_hud_peer_for_open(source)
-            if not self.disable_spawn:
-                deadline = time.time() + 0.8
-                while time.time() < deadline:
-                    if WIN32.is_mutex_held(HUD_MUTEX_NAME) or (self._proc is not None and self._proc.poll() is None):
-                        break
-                    time.sleep(0.04)
-            return self._cfg_resp("open", cfg_res)
+            resp = self._cfg_resp("open", cfg_res)
+            already_running = bool((resp.get("hudWindow") or {}).get("running"))
+            resp["launching"] = bool(not self.disable_spawn and not already_running)
+            return resp
 
         if action == "close":
             patch = {**body, "enabled": False}
@@ -911,7 +976,7 @@ class _DesktopHudManager:
 
         if action == "reset_position":
             cfg_res = self.engine.update_config({"x": None, "y": None, "physX": None, "physY": None, "anchorCorner": "top-right", "width": 388, "customHeight": None})
-            enabled_after = bool((cfg_res.get("config", {}).get("hud") or {}).get("enabled", True))
+            enabled_after = bool((cfg_res.get("config", {}).get("hud") or {}).get("enabled", False))
             self._log_hud_event(
                 "action_reset_position",
                 source=source,
@@ -943,6 +1008,130 @@ class _DesktopHudManager:
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        RequestHandlerClass: Any,
+        engine: Optional[FlowPilotEngine] = None,
+    ) -> None:
+        self._sse_lock = threading.Lock()
+        self._sse_conns: set[socket.socket] = set()
+        self._sse_closing = False
+        self._engine = engine
+        super().__init__(server_address, RequestHandlerClass)
+
+    def register_sse_conn(self, sock: socket.socket) -> bool:
+        with self._sse_lock:
+            if self._sse_closing:
+                return False
+            self._sse_conns.add(sock)
+            return True
+
+    def unregister_sse_conn(self, sock: socket.socket) -> None:
+        with self._sse_lock:
+            self._sse_conns.discard(sock)
+
+    def close_sse_clients(self) -> None:
+        with self._sse_lock:
+            self._sse_closing = True
+            conns = list(self._sse_conns)
+            self._sse_conns.clear()
+        if self._engine is not None:
+            self._engine.wake_sse_waiters()
+        for s in conns:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    def stop(self) -> None:
+        self.close_sse_clients()
+        self.shutdown()
+        self.server_close()
+
+
+def _build_compact_tasks_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Slim capsule payload omitting idle history list and topChildren/subagent detail bloat."""
+    compact_tasks: list[dict[str, Any]] = []
+    for t in payload.get("tasks") or []:
+        if not isinstance(t, dict):
+            continue
+        bucket = str(t.get("bucket") or "IDLE")
+        if bucket == "IDLE" and not bool(t.get("isPinned")):
+            continue
+        ctx = t.get("context") if isinstance(t.get("context"), dict) else {}
+        ts = t.get("tokenSpeed") if isinstance(t.get("tokenSpeed"), dict) else {}
+        hb = t.get("heartbeat") if isinstance(t.get("heartbeat"), dict) else {}
+        sw = t.get("swarmSummary") if isinstance(t.get("swarmSummary"), dict) else {}
+        compact_tasks.append({
+            "taskKey": t.get("taskKey", ""),
+            "lsInstanceId": t.get("lsInstanceId", ""),
+            "conversationId": t.get("conversationId", ""),
+            "title": t.get("title", ""),
+            "isPinned": bool(t.get("isPinned")),
+            "bucket": bucket,
+            "status": t.get("status", "IDLE"),
+            "runBatchStartedAt": t.get("runBatchStartedAt", 0.0),
+            "justFinishedAt": t.get("justFinishedAt", 0.0),
+            "lastModifiedAt": t.get("lastModifiedAt", 0.0),
+            "modelLabel": t.get("modelLabel", ""),
+            "effectiveLiveTps": t.get("effectiveLiveTps", 0.0),
+            "anyWaitingTtft": bool(t.get("anyWaitingTtft")),
+            "anyGenerating": bool(t.get("anyGenerating")),
+            "context": {
+                "used": ctx.get("used", 0),
+                "max": ctx.get("max", 0),
+                "percent": ctx.get("percent", 0.0),
+            },
+            "tokenSpeed": {
+                "active": bool(ts.get("active")),
+                "phase": ts.get("phase", "idle"),
+                "phaseLabel": ts.get("phaseLabel", ""),
+                "displayTokensPerSec": ts.get("displayTokensPerSec", 0.0),
+                "elapsedGenSec": ts.get("elapsedGenSec", 0.0),
+            },
+            "heartbeat": {
+                "state": hb.get("state", "idle"),
+                "stateLabel": hb.get("stateLabel", ""),
+                "isRunning": bool(hb.get("isRunning")),
+                "isStalled": bool(hb.get("isStalled")),
+                "retryAlert": bool(hb.get("retryAlert")),
+            },
+            "swarmSummary": {
+                "isSwarm": bool(sw.get("isSwarm")),
+                "totalCount": sw.get("totalCount", 0),
+                "runningCount": sw.get("runningCount", 0),
+                "errorCount": sw.get("errorCount", 0),
+                "liveTokensPerSec": sw.get("liveTokensPerSec", 0.0),
+                "anyWaitingTtft": bool(sw.get("anyWaitingTtft")),
+                "anyGenerating": bool(sw.get("anyGenerating")),
+            },
+        })
+    hud_status = payload.get("hudWindow") or {"running": False, "visible": False}
+    return {
+        "ok": True,
+        "compact": True,
+        "rev": payload.get("rev", 0),
+        "timestamp": payload.get("timestamp", 0.0),
+        "lsInstanceId": payload.get("lsInstanceId", ""),
+        "summary": payload.get("summary") or {},
+        "config": payload.get("config") or {},
+        "hudWindow": hud_status,
+        "hudRuntime": {
+            "running": bool(hud_status.get("running")),
+            "visible": bool(hud_status.get("visible")),
+            "ownsHud": bool(hud_status.get("ownsHud")),
+            "hostKind": hud_status.get("hostKind", "none"),
+        },
+        "fastIoConfig": payload.get("fastIoConfig") or {},
+        "fastIoStats": payload.get("fastIoStats") or {},
+        "tasks": compact_tasks,
+    }
 
 
 def make_handler(
@@ -1071,6 +1260,7 @@ def make_handler(
                     self._send_json(401, {"ok": False, "error": "unauthorized"})
                     return
                 hint_cid = (qs["hintConversationId"][0] or "").strip() if "hintConversationId" in qs else ""
+                compact_mode = (qs.get("compact", ["0"])[0] or "0").strip().lower() in ("1", "true", "yes")
                 since_rev = 0
                 if "sinceRev" in qs:
                     try:
@@ -1089,9 +1279,83 @@ def make_handler(
                 try:
                     payload = peer_coord.aggregate_all_tasks(hint_conversation_id=hint_cid) if peer_coord is not None else engine.get_local_tasks_payload(hint_conversation_id=hint_cid)
                     payload["hudWindow"] = hud_mgr.get_status() if hud_mgr is not None else {"running": False, "visible": False}
+                    if compact_mode:
+                        payload = _build_compact_tasks_payload(payload)
                     self._send_json(200, payload)
                 except Exception as exc:
                     self._send_json(500, {"ok": False, "error": str(exc)})
+                return
+
+            if route == "/api/events":
+                qs = urllib.parse.parse_qs(query_str, keep_blank_values=True) if query_str else {}
+                if not self._check_token(qs):
+                    self._send_json(401, {"ok": False, "error": "unauthorized"})
+                    return
+                srv = self.server
+                if getattr(srv, "_engine", None) is None:
+                    try:
+                        srv._engine = engine  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                if hasattr(srv, "register_sse_conn") and not srv.register_sse_conn(self.connection):
+                    self._send_json(503, {"ok": False, "error": "server_shutting_down"})
+                    return
+
+                last_rev = -1
+                raw_last = (self.headers.get("Last-Event-ID") or "").strip()
+                if not raw_last and "sinceRev" in qs:
+                    raw_last = (qs["sinceRev"][0] or "").strip()
+                elif not raw_last and "lastRev" in qs:
+                    raw_last = (qs["lastRev"][0] or "").strip()
+                if raw_last:
+                    try:
+                        last_rev = int(raw_last)
+                    except (ValueError, TypeError):
+                        last_rev = -1
+
+                self.close_connection = True
+                try:
+                    self.connection.settimeout(None)
+                except OSError:
+                    pass
+                header_bytes = (
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream; charset=utf-8\r\n"
+                    b"Cache-Control: no-store, no-cache, must-revalidate\r\n"
+                    b"Connection: close\r\n"
+                    b"X-Accel-Buffering: no\r\n"
+                    b"\r\n"
+                )
+                try:
+                    self.wfile.write(header_bytes)
+                    cur_rev = engine.get_rev()
+                    if cur_rev != last_rev:
+                        last_rev = cur_rev
+                        self.wfile.write(f'id: {cur_rev}\nevent: rev\ndata: {{"rev":{cur_rev}}}\n\n'.encode("ascii"))
+                    else:
+                        self.wfile.write(b": connected\n\n")
+                    self.wfile.flush()
+
+                    while not getattr(srv, "_sse_closing", False) and not engine._stop_event.is_set():
+                        new_rev, stopped = engine.wait_for_rev_change(
+                            last_rev,
+                            timeout=20.0,
+                            stop_check=lambda: bool(getattr(srv, "_sse_closing", False)),
+                        )
+                        if stopped or getattr(srv, "_sse_closing", False):
+                            break
+                        if new_rev != last_rev:
+                            last_rev = new_rev
+                            self.wfile.write(f'id: {new_rev}\nevent: rev\ndata: {{"rev":{new_rev}}}\n\n'.encode("ascii"))
+                            self.wfile.flush()
+                        else:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                    pass
+                finally:
+                    if hasattr(srv, "unregister_sse_conn"):
+                        srv.unregister_sse_conn(self.connection)
                 return
 
             if route == "/hud-bootstrap":
@@ -1193,7 +1457,10 @@ def make_handler(
                     return
 
                 if route == "/api/config":
-                    self._send_json(200, engine.update_config(body))
+                    cfg_out = engine.update_config(body)
+                    if hud_mgr is not None:
+                        hud_mgr.notify_config_changed()
+                    self._send_json(200, cfg_out)
                     return
                 if route == "/api/hud":
                     if hud_mgr is None:
@@ -1291,12 +1558,17 @@ def main() -> None:
     hud_mgr_ref: list[Optional[_DesktopHudManager]] = [None]
 
     engine = FlowPilotEngine()
-    httpd = _ReusableThreadingHTTPServer(("127.0.0.1", port), make_handler(engine, ui_token, peer_coord_ref, hud_mgr_ref))
+    httpd = _ReusableThreadingHTTPServer(
+        ("127.0.0.1", port),
+        make_handler(engine, ui_token, peer_coord_ref, hud_mgr_ref),
+        engine=engine,
+    )
     bound_port = int(httpd.server_address[1])
 
     peer_coord = _PeerNodeCoordinator(engine, bound_port)
     hud_mgr = _DesktopHudManager(engine, peer_coord, bound_port)
     peer_coord_ref[0], hud_mgr_ref[0] = peer_coord, hud_mgr
+    engine.set_config_change_callback(hud_mgr.notify_config_changed)
 
     engine.start()
     peer_coord.start()
@@ -1314,6 +1586,7 @@ def main() -> None:
                 return
             shutting_down = True
         stop_watchdog.set()
+        httpd.close_sse_clients()
         hud_mgr.stop()
         peer_coord.stop()
         engine.stop()
@@ -1330,6 +1603,7 @@ def main() -> None:
         httpd.serve_forever(poll_interval=0.2)
     finally:
         stop_watchdog.set()
+        httpd.close_sse_clients()
         hud_mgr.stop()
         peer_coord.stop()
         engine.stop()
