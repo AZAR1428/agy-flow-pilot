@@ -6,7 +6,7 @@
   <link rel="icon" href="data:," />
   <title>Flow Pilot · 实时监控</title>
   <style>
-  /* Flow Pilot v3.8.2 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
+  /* Flow Pilot v3.8.3 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
   :root,
   html[data-theme="light"] {
     color-scheme: light;
@@ -865,12 +865,6 @@
           </div>
 
           <div class="set-row">
-            <div id="toggleAutoHeal" class="switch-btn" role="switch" aria-checked="false" tabindex="0">
-              <span>断流自动续跑</span><span class="switch-track"></span>
-            </div>
-          </div>
-
-          <div class="set-row">
             <span>挂起超时阈值</span>
             <div id="thresholdGroup" class="seg-group" role="radiogroup">
               <button class="seg-btn" data-sec="60" type="button">60s</button>
@@ -1049,7 +1043,7 @@
   el("dockBackBtn").style.display = isHudMode ? "inline-flex" : "none";
 
   /* ---------- State Store ---------- */
-  let watchdogConfig = { autoHealStream: false, stallThresholdSec: 90 };
+  let watchdogConfig = { stallThresholdSec: 90 };
   let fastIoConfig = { mcpEnabled: true };
   let fastIoStats = {
     batchReadCalls: 0, batchReadFiles: 0, grepCalls: 0, globCalls: 0,
@@ -3464,7 +3458,6 @@
     const cfg = payload.config && typeof payload.config === "object" ? payload.config : {};
 
     if (!opts.localOnlyPrefs && Date.now() > configDirtyUntil) {
-      if (typeof cfg.autoHealStream === "boolean") watchdogConfig.autoHealStream = cfg.autoHealStream;
       if (typeof cfg.stallThresholdSec === "number") watchdogConfig.stallThresholdSec = cfg.stallThresholdSec;
 
       const fioCfg = (payload.fastIoConfig && typeof payload.fastIoConfig === "object")
@@ -3936,8 +3929,6 @@
       isManualH ? `↕ 恢复自适应高度 (${Math.round(hudPrefs.customHeight)}px)` : "↕ 自适应伸缩中"
     );
 
-    el("toggleAutoHeal").classList.toggle("on", Boolean(watchdogConfig.autoHealStream));
-    el("toggleAutoHeal").setAttribute("aria-checked", String(Boolean(watchdogConfig.autoHealStream)));
     el("thresholdGroup").querySelectorAll(".seg-btn").forEach((b) => {
       b.classList.toggle("active", Number(b.dataset.sec) === Number(watchdogConfig.stallThresholdSec));
     });
@@ -4070,9 +4061,6 @@
     const next = !hudPrefs.alwaysOnTop;
     HostWindowBridge.setTopMost(next);
     saveHudPrefs({ alwaysOnTop: next });
-  });
-  bindSwitchKey(el("toggleAutoHeal"), () => {
-    saveWatchdogConfig({ autoHealStream: !watchdogConfig.autoHealStream });
   });
 
   el("thresholdGroup").querySelectorAll(".seg-btn").forEach((btn) => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight multi-task stream telemetry, on-demand error diagnosis & watchdog for Flow Pilot v3.8.2."""
+"""Ultra-lightweight multi-task stream telemetry & on-demand error diagnosis for Flow Pilot v3.8.3."""
 
 from __future__ import annotations
 
@@ -59,9 +59,6 @@ ACTIVE_PLANNER_STEP_STATUSES = frozenset({
     "CORTEX_STEP_STATUS_GENERATING", "CORTEX_STEP_STATUS_RUNNING", "CORTEX_STEP_STATUS_PENDING",
     "GENERATING", "RUNNING", "PENDING",
 })
-
-DEFAULT_AUTO_HEAL_STREAM = False
-DEFAULT_AUTO_CANCEL_STALL = False
 
 SPEED_PHASE_LABELS: dict[str, str] = {
     "waiting_ttft": "等待首字", "thinking": "思考中", "generating": "输出中",
@@ -1107,13 +1104,7 @@ class FlowPilotEngine:
     HOOK_BEACON_RUN_BRIDGE_SEC = 4.0
     STREAM_READ_TIMEOUT_SEC = 660.0
     PLANNER_CREATED_TS_MAX_AGE_SEC = 780.0
-    AUTO_HEAL_STARTUP_GRACE_SEC = 30.0
-    AUTO_HEAL_MIN_AGE_SEC = 8.0
-    AUTO_HEAL_MAX_AGE_SEC = 120.0
-    AUTO_HEAL_MAX_PER_INCIDENT = 1
     SQLITE_READ_TIMEOUT_SEC = 0.15
-    _AUTO_HEAL_PROMPT_MARKER = "[Flow Pilot 自愈续跑]"
-    _AUTO_HEAL_MARKER_BYTES = _AUTO_HEAL_PROMPT_MARKER.encode("utf-8")
     _ANNOTATION_REMOVED_RE = re.compile(r"\b(?:archived|deleted)\s*:\s*true\b", re.IGNORECASE)
     _NORMAL_TERM_KEYWORDS = ("TERMINAL_CUSTOM_HOOK", "NO_TOOL_CALL", "USER_CANCELED", "USER_CANCELLED", "COMPLETED")
     _ANOMALY_TERM_KEYWORDS = ("ERROR", "INTERRUPT", "DEADLINE", "TIMEOUT", "QUOTA", "EXCEED", "PANIC", "ABORT", "FAIL", "EOF")
@@ -1152,8 +1143,6 @@ class FlowPilotEngine:
         self._fast_io_stats_sig: tuple[int, int] = (0, -1)
         self._fast_io_stats_cache: dict[str, Any] = dict(DEFAULT_FAST_IO_STATS)
         self.config: dict[str, Any] = {
-            "autoHealStream": DEFAULT_AUTO_HEAL_STREAM,
-            "autoCancelStall": DEFAULT_AUTO_CANCEL_STALL,
             "stallThresholdSec": 90,
             "hostThemeHint": "light",
             "hud": dict(DEFAULT_HUD_CONFIG),
@@ -1196,10 +1185,6 @@ class FlowPilotEngine:
 
         self._runtimes: dict[str, ConversationRuntime] = {}
         self._streams: dict[str, _StreamWorkerHandle] = {}
-        self._stream_heal_gate: dict[tuple[str, int], dict[str, float]] = {}
-        self._step_stall_gate: dict[tuple[str, int], float] = {}
-        self._watchdog_log_gate: dict[tuple[Any, ...], float] = {}
-        self._watchdog_leader_cache: tuple[float, bool] = (0.0, True)
         self._poller_thread: Optional[threading.Thread] = None
         self._large_frame_lock = threading.Lock()
         self._init_conn_sem = threading.Semaphore(1)
@@ -1446,8 +1431,6 @@ class FlowPilotEngine:
             hud_copy = dict(self.config.get("hud") or DEFAULT_HUD_CONFIG)
             hud_copy["pinnedIds"] = list(hud_copy.get("pinnedIds") or [])
             return {
-                "autoHealStream": bool(self.config.get("autoHealStream", DEFAULT_AUTO_HEAL_STREAM)),
-                "autoCancelStall": bool(self.config.get("autoCancelStall", DEFAULT_AUTO_CANCEL_STALL)),
                 "stallThresholdSec": int(self.config.get("stallThresholdSec", 90)),
                 "hostThemeHint": str(self.config.get("hostThemeHint") or "light"),
                 "hud": hud_copy,
@@ -1495,10 +1478,6 @@ class FlowPilotEngine:
             raw = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 with self._lock:
-                    if raw.get("autoHealStream") is not None:
-                        self.config["autoHealStream"] = bool(raw["autoHealStream"])
-                    if raw.get("autoCancelStall") is not None:
-                        self.config["autoCancelStall"] = bool(raw["autoCancelStall"])
                     if raw.get("stallThresholdSec") is not None:
                         self.config["stallThresholdSec"] = max(0, min(3600, int(raw["stallThresholdSec"])))
                     self.config["hostThemeHint"] = "light"
@@ -1513,15 +1492,15 @@ class FlowPilotEngine:
                     self._state_rev += 1
 
                     if (
-                        raw_hud.get("theme") != "light"
+                        "autoHealStream" in raw
+                        or "autoCancelStall" in raw
+                        or raw_hud.get("theme") != "light"
                         or "autoCollapseOnIdle" in raw_hud
                         or "uiStyleVersion" in raw_hud
                         or str(raw.get("hostThemeHint") or "").strip().lower() != "light"
                         or not isinstance(raw.get("fastIo"), dict)
                     ):
                         migrated_snapshot = {
-                            "autoHealStream": bool(self.config.get("autoHealStream", DEFAULT_AUTO_HEAL_STREAM)),
-                            "autoCancelStall": bool(self.config.get("autoCancelStall", DEFAULT_AUTO_CANCEL_STALL)),
                             "stallThresholdSec": int(self.config["stallThresholdSec"]),
                             "hostThemeHint": "light",
                             "hud": {**sanitized_hud, "pinnedIds": list(sanitized_hud.get("pinnedIds") or [])},
@@ -1539,10 +1518,6 @@ class FlowPilotEngine:
             return {"ok": True, "config": self.get_config_snapshot()}
         self._load_config_safe(force=False)
         with self._lock:
-            if patch.get("autoHealStream") is not None:
-                self.config["autoHealStream"] = bool(patch["autoHealStream"])
-            if patch.get("autoCancelStall") is not None:
-                self.config["autoCancelStall"] = bool(patch["autoCancelStall"])
             if patch.get("stallThresholdSec") is not None:
                 self.config["stallThresholdSec"] = max(0, min(3600, int(patch["stallThresholdSec"])))
             self.config["hostThemeHint"] = "light"
@@ -1574,8 +1549,6 @@ class FlowPilotEngine:
             self.config["fastIo"] = cur_fast_io
             self._state_rev += 1
             snapshot = {
-                "autoHealStream": bool(self.config.get("autoHealStream", DEFAULT_AUTO_HEAL_STREAM)),
-                "autoCancelStall": bool(self.config.get("autoCancelStall", DEFAULT_AUTO_CANCEL_STALL)),
                 "stallThresholdSec": int(self.config["stallThresholdSec"]),
                 "hostThemeHint": str(self.config.get("hostThemeHint") or "light"),
                 "hud": {**cur_hud, "pinnedIds": list(cur_hud["pinnedIds"])},
@@ -1905,10 +1878,6 @@ class FlowPilotEngine:
             if not aged_out_only and pcid in cur_pinned:
                 cur_pinned = [x for x in cur_pinned if x != pcid]
                 pinned_changed = True
-            for gk in [k for k in self._stream_heal_gate if k[0] == pcid]:
-                self._stream_heal_gate.pop(gk, None)
-            for sk_gate in [k for k in self._step_stall_gate if k[0] == pcid]:
-                self._step_stall_gate.pop(sk_gate, None)
 
             if not aged_out_only:
                 sk = safe_cid(pcid)
@@ -2290,8 +2259,6 @@ class FlowPilotEngine:
                 if pinned_changed:
                     cur_hud = dict(self.config.get("hud") or DEFAULT_HUD_CONFIG)
                     pinned_changed_snap = {
-                        "autoHealStream": bool(self.config.get("autoHealStream", DEFAULT_AUTO_HEAL_STREAM)),
-                        "autoCancelStall": bool(self.config.get("autoCancelStall", DEFAULT_AUTO_CANCEL_STALL)),
                         "stallThresholdSec": int(self.config.get("stallThresholdSec", 90)),
                         "hostThemeHint": str(self.config.get("hostThemeHint") or "light"),
                         "hud": {**cur_hud, "pinnedIds": list(cur_hud.get("pinnedIds") or [])},
@@ -5090,27 +5057,10 @@ class FlowPilotEngine:
         try:
             conn = sqlite3.connect(f"file:{db_file.as_posix()}?mode=ro", uri=True, timeout=self.SQLITE_READ_TIMEOUT_SEC)
             cur = conn.cursor()
-            ui_rows = cur.execute(
-                "SELECT idx, metadata, step_payload FROM steps WHERE step_type = 14 AND status = 3 ORDER BY idx DESC LIMIT 32"
-            ).fetchall()
-            origin_user_idx = -1
-            oldest_checked_ui = -1
-            for u_idx, u_meta, u_payload in ui_rows:
-                oldest_checked_ui = int(u_idx)
-                raw_u = (u_payload or b"") + b"\x00" + (u_meta or b"")
-                if self._AUTO_HEAL_MARKER_BYTES in raw_u:
-                    continue
-                u_strs = _extract_proto_strings(u_payload or b"") + _extract_proto_strings(u_meta or b"")
-                if any(self._AUTO_HEAL_PROMPT_MARKER in s for s in u_strs):
-                    continue
-                origin_user_idx = int(u_idx)
-                break
-            if origin_user_idx < 0 and len(ui_rows) == 32 and oldest_checked_ui > 0:
-                fb_row = cur.execute(
-                    "SELECT COALESCE(MAX(idx), -1) FROM steps WHERE step_type = 14 AND status = 3 AND idx < ?",
-                    (oldest_checked_ui,),
-                ).fetchone()
-                origin_user_idx = int(fb_row[0] if (fb_row and fb_row[0] is not None) else -1)
+            origin_row = cur.execute(
+                "SELECT COALESCE(MAX(idx), -1) FROM steps WHERE step_type = 14 AND status = 3"
+            ).fetchone()
+            origin_user_idx = int(origin_row[0] if (origin_row and origin_row[0] is not None) else -1)
 
             last_ok_row = cur.execute(
                 "SELECT COALESCE(MAX(idx), -1) FROM steps WHERE idx > ? AND step_type = 15 AND status IN (2, 3)",
@@ -6129,7 +6079,6 @@ class FlowPilotEngine:
                     self._scan_sqlite_bg_script(sc_cid)
                 for cid in monitored_roots[: self.MAX_ACTIVE_STREAMS]:
                     self._diagnose_sqlite_if_needed(cid, now, stall_sec)
-                    self._run_watchdog_for_conversation(cid, cfg)
                 if (probe_targets or child_probe_targets) and not self._stop_event.is_set():
                     self._spawn_snapshot_probes_async(probe_targets, child_probe_targets)
             except Exception:
@@ -6147,28 +6096,6 @@ class FlowPilotEngine:
                 return True
             s = self._trajectories.get(cid)
         return self._is_subagent_summary(cid, s) if isinstance(s, dict) else False
-
-    @staticmethod
-    def _should_circuit_break_auto_resume_locked(rt: ConversationRuntime, alert: dict[str, Any]) -> bool:
-        """Suppress blind auto-resume on server restart recovery, cache=0 cliff, or repeated/heavy-context timeouts."""
-        if bool(alert.get("isServerRestart", False)):
-            return True
-        alert_msg_low = str(alert.get("message") or "").lower()
-        if any(rk in alert_msg_low for rk in FlowPilotEngine._SERVER_RESTART_EXEMPT_KEYWORDS):
-            return True
-        if rt.cache_miss_streak >= 2:
-            return True
-        if rt.last_turn_usage is not None:
-            l_in = max(0, int(rt.last_turn_usage[0]))
-            l_cache = max(0, int(rt.last_turn_usage[1]))
-            l_denom = l_in + l_cache
-            if l_denom > 0 and l_in >= 40_000 and ((l_cache / l_denom) * 100.0) < 10.0:
-                return True
-        if int(alert.get("consecutiveErrors") or 0) >= 2:
-            return True
-        if bool(alert.get("isTimeout", False)) and int(rt.tokens_used or 0) >= 180_000:
-            return True
-        return False
 
     def _is_step_log_recently_modified(
         self, cid: str, step_idx: int, step_log_uri: str, now: float, fresh_sec: float = 30.0
@@ -6203,201 +6130,6 @@ class FlowPilotEngine:
                 self._log_fresh_cache.clear()
             self._log_fresh_cache[key] = (now_m, now, res)
         return res
-
-    def _log_watchdog(
-        self, event: str, cid: str, detail: str = "", rate_key: Optional[tuple[Any, ...]] = None, min_interval: float = 60.0
-    ) -> None:
-        now = time.time()
-        if rate_key is not None:
-            with self._lock:
-                last_at = self._watchdog_log_gate.get(rate_key, 0.0)
-                if (now - last_at) < min_interval:
-                    return
-                if len(self._watchdog_log_gate) > 256:
-                    self._watchdog_log_gate.clear()
-                self._watchdog_log_gate[rate_key] = now
-        try:
-            cid_short = (cid or "")[:8]
-            suffix = f" {detail}" if detail else ""
-            sys.stderr.write(f"[agy-flow-pilot] watchdog {event} cid={cid_short}{suffix}\n")
-            sys.stderr.flush()
-        except Exception:
-            pass
-
-    def _is_watchdog_leader(self, now: float) -> bool:
-        """Single-leader election across live sidecar nodes in nodes_dir (defaults True when single-node or tests)."""
-        with self._lock:
-            cached_at, cached_val = self._watchdog_leader_cache
-            if cached_at > 0.0 and (now - cached_at) < 3.0:
-                return cached_val
-            nodes_dir = self.nodes_dir
-            self_id = self.ls_instance_id
-        if not nodes_dir.is_dir():
-            with self._lock:
-                self._watchdog_leader_cache = (now, True)
-            return True
-        self_pid = os.getpid()
-        alive_nodes: list[tuple[int, str]] = [(self_pid, self_id)]
-        try:
-            with os.scandir(str(nodes_dir)) as it:
-                for entry in it:
-                    if not entry.name.endswith(".json") or entry.name.startswith("."):
-                        continue
-                    try:
-                        raw = json.loads(Path(entry.path).read_text(encoding="utf-8"))
-                        if not isinstance(raw, dict):
-                            continue
-                        nid = str(raw.get("lsInstanceId") or "").strip()
-                        pid = int(raw.get("pid") or 0)
-                        upd = float(raw.get("updatedAt") or 0.0)
-                        if not nid or nid == self_id or pid <= 0 or (now - upd) > 45.0:
-                            continue
-                        if _is_pid_alive_fast(pid):
-                            alive_nodes.append((pid, nid))
-                    except Exception:
-                        continue
-        except OSError:
-            pass
-        alive_nodes.sort()
-        is_leader = alive_nodes[0] == (self_pid, self_id)
-        with self._lock:
-            self._watchdog_leader_cache = (now, is_leader)
-        return is_leader
-
-    def _run_watchdog_for_conversation(self, cid: str, cfg: dict[str, Any]) -> None:
-        now = time.time()
-        resume_info: Optional[tuple[int, int, float]] = None
-        stall_step_info: Optional[tuple[int, str, float]] = None
-        stall_sec = int(cfg.get("stallThresholdSec") or 0)
-        auto_heal_enabled = bool(cfg.get("autoHealStream", DEFAULT_AUTO_HEAL_STREAM))
-        auto_cancel_stall = bool(cfg.get("autoCancelStall", DEFAULT_AUTO_CANCEL_STALL))
-        skip_log: Optional[tuple[str, str, tuple[Any, ...]]] = None
-        stall_alert_log: Optional[tuple[int, str, float, str]] = None
-
-        with self._lock:
-            rt = self._runtimes.get(cid)
-            if rt is None or not rt.stream_connected:
-                return
-            hb_checks = self._collect_hb_log_checks_locked(rt, now, stall_sec)
-
-        hb_log_fresh = self._resolve_hb_log_fresh_map(cid, hb_checks, now) if hb_checks else {}
-        is_leader = self._is_watchdog_leader(now) if (auto_heal_enabled or auto_cancel_stall) else True
-
-        with self._lock:
-            if self.ls_instance_id != self._bound_ls_instance_id:
-                self._bound_ls_instance_id = self.ls_instance_id
-                self._engine_started_at = now
-                self._ls_start_ts = self._discover_ls_start_ts()
-            rt = self._runtimes.get(cid)
-            if rt is None or not rt.stream_connected:
-                return
-            term_upper = (rt.latest_termination_reason or "").upper()
-            hb = self._compute_heartbeat_locked(rt, now, stall_sec, log_fresh_map=hb_log_fresh)
-            in_startup_grace = (now - self._engine_started_at) < self.AUTO_HEAL_STARTUP_GRACE_SEC
-            alert = hb.get("retryAlert")
-            if (
-                auto_heal_enabled
-                and not any(kw in term_upper for kw in self._NORMAL_TERM_KEYWORDS)
-                and isinstance(alert, dict)
-                and bool(alert.get("isInterrupted"))
-                and not bool(alert.get("isServerRestart"))
-                and not hb.get("isRunning")
-                and not rt.composite_running
-            ):
-                err_idx = int(alert["stepIndex"])
-                origin_turn_idx = int(
-                    alert["originTurnIdx"]
-                    if alert.get("originTurnIdx") is not None
-                    else max(rt.last_user_input_idx, self._current_turn_floor_idx_locked(rt))
-                )
-                age_sec = float(alert.get("ageSec") or 0.0)
-                if in_startup_grace:
-                    skip_log = ("auto_heal_skip", f"reason=startup_grace err_idx={err_idx} origin={origin_turn_idx}", ("ah_grace", cid, origin_turn_idx))
-                elif not is_leader:
-                    skip_log = ("auto_heal_skip", f"reason=not_leader err_idx={err_idx} origin={origin_turn_idx}", ("ah_leader", cid, origin_turn_idx))
-                elif age_sec < self.AUTO_HEAL_MIN_AGE_SEC or age_sec > self.AUTO_HEAL_MAX_AGE_SEC:
-                    skip_log = ("auto_heal_skip", f"reason=age_out_of_range age={age_sec:.1f}s err_idx={err_idx} origin={origin_turn_idx}", ("ah_age", cid, origin_turn_idx))
-                elif self._should_circuit_break_auto_resume_locked(rt, alert):
-                    skip_log = (
-                        "auto_heal_skip",
-                        f"reason=circuit_broken consec={int(alert.get('consecutiveErrors') or 0)} err_idx={err_idx} origin={origin_turn_idx}",
-                        ("ah_cb", cid, origin_turn_idx),
-                    )
-                else:
-                    gate_key = (cid, origin_turn_idx)
-                    gate = self._stream_heal_gate.get(gate_key, {"count": 0, "last_at": 0.0})
-                    count = int(gate["count"])
-                    if count >= self.AUTO_HEAL_MAX_PER_INCIDENT:
-                        skip_log = ("auto_heal_skip", f"reason=budget_exhausted count={count} err_idx={err_idx} origin={origin_turn_idx}", ("ah_cap", cid, origin_turn_idx))
-                    else:
-                        if len(self._stream_heal_gate) > 128:
-                            self._stream_heal_gate.clear()
-                        self._stream_heal_gate[gate_key] = {"count": count + 1, "last_at": now}
-                        resume_info = (err_idx, origin_turn_idx, age_sec)
-
-            run_idx = int(hb.get("runningStepIndex", -1))
-            t_name = str(hb.get("toolName") or "")
-            run_step_type = str((rt.steps_by_idx.get(run_idx) or {}).get("type") or "") if run_idx >= 0 else ""
-            if (
-                not in_startup_grace
-                and hb.get("isStalled")
-                and run_idx >= 0
-                and t_name
-                and not _is_intentional_wait_step(t_name, run_step_type)
-            ):
-                st_el = float(hb.get("elapsedSec") or 0.0)
-                if not auto_cancel_stall:
-                    stall_alert_log = (run_idx, t_name, st_el, "alert_only")
-                elif is_leader:
-                    s_key = (cid, run_idx)
-                    if s_key not in self._step_stall_gate:
-                        if len(self._step_stall_gate) > 128:
-                            self._step_stall_gate.clear()
-                        self._step_stall_gate[s_key] = now
-                        stall_step_info = (run_idx, t_name, st_el)
-                    else:
-                        stall_alert_log = (run_idx, t_name, st_el, "cancel_cap_reached")
-
-        if skip_log is not None:
-            self._log_watchdog(skip_log[0], cid, skip_log[1], rate_key=skip_log[2], min_interval=60.0)
-
-        if stall_alert_log is not None:
-            s_idx_l, s_tool_l, s_el_l, s_mode_l = stall_alert_log
-            self._log_watchdog(
-                "stall_alert",
-                cid,
-                f"step={s_idx_l} tool={s_tool_l} elapsed={s_el_l:.0f}s mode={s_mode_l}",
-                rate_key=("stall_alert", cid, s_idx_l, s_mode_l),
-                min_interval=60.0,
-            )
-
-        if resume_info is not None:
-            r_err_idx, r_origin_idx, r_age = resume_info
-            self._log_watchdog("auto_heal_trigger", cid, f"err_idx={r_err_idx} origin={r_origin_idx} age={r_age:.1f}s")
-            try:
-                msg = f"{self._AUTO_HEAL_PROMPT_MARKER} 检测到上一轮流意外中断（The stream was interrupted），请直接从刚才中断的位置继续完成任务，无需重复已完成的操作。"
-                self.rpc_call("SendUserCascadeMessage", self._build_send_user_payload(cid, [{"text": msg}]), timeout=4.0)
-                self._log_watchdog("auto_heal_rpc_ok", cid, f"err_idx={r_err_idx} origin={r_origin_idx}")
-            except Exception as exc:
-                self._log_watchdog("auto_heal_rpc_error", cid, f"err_idx={r_err_idx} origin={r_origin_idx} err={str(exc)[:180]}")
-
-        if stall_step_info is not None:
-            st_idx, st_tool, st_elapsed = stall_step_info
-            self._log_watchdog("stall_cancel_trigger", cid, f"step={st_idx} tool={st_tool} elapsed={st_elapsed:.0f}s")
-            unlocked_via = "CancelCascadeSteps"
-            try:
-                self.rpc_call("CancelCascadeSteps", {"cascadeId": cid, "stepIndices": [st_idx]}, timeout=3.5)
-            except Exception as exc:
-                unlocked_via = ""
-                self._log_watchdog("stall_cancel_rpc_error", cid, f"step={st_idx} tool={st_tool} err={str(exc)[:180]}")
-            if unlocked_via:
-                try:
-                    self.rpc_call("SendAgentMessage", {
-                        "recipient": cid, "senderId": "agy-flow-pilot", "displayTitle": "Flow Pilot Watchdog",
-                        "content": f"[Flow Pilot 看门狗] {st_tool} 已无进展挂起 {st_elapsed:.0f}s，已自动中断卡死步骤 ({unlocked_via}) 解锁主循环，请检查状态或调整命令后继续。",
-                    }, timeout=3.5)
-                except Exception as exc:
-                    self._log_watchdog("stall_notify_rpc_error", cid, f"step={st_idx} err={str(exc)[:180]}")
 
     # ------------------------------------------------------------------
     # Public HTTP API Operations & Shared Finalization
