@@ -14,8 +14,8 @@ using Microsoft.Web.WebView2.Core;
 
 [assembly: AssemblyTitle("FlowPilotHost")]
 [assembly: AssemblyProduct("Flow Pilot")]
-[assembly: AssemblyVersion("3.9.0.0")]
-[assembly: AssemblyFileVersion("3.9.0.0")]
+[assembly: AssemblyVersion("3.9.1.0")]
+[assembly: AssemblyFileVersion("3.9.1.0")]
 
 namespace AgyFlowPilot
 {
@@ -430,7 +430,7 @@ namespace AgyFlowPilot
 
     internal sealed class HudForm : Form
     {
-        public const string HostVersion = "3.9.0";
+        public const string HostVersion = "3.9.1";
         public const string LightweightBrowserArgs =
             "--disable-features=msSmartScreenProtection,Translate,msWebOOUI,msPdfOOUI,SpareRendererForSitePerProcess --renderer-process-limit=1 --autoplay-policy=no-user-gesture-required --no-first-run --no-default-browser-check";
 
@@ -3535,7 +3535,7 @@ namespace AgyFlowPilot
                 bool mmiOk = (mmiSize == 40);
 
                 bool lowMemEnumOk = ((int)CoreWebView2MemoryUsageTargetLevel.Low == 1);
-                bool equalWidthOk = string.Equals(HudForm.HostVersion, "3.9.0", StringComparison.Ordinal)
+                bool equalWidthOk = string.Equals(HudForm.HostVersion, "3.9.1", StringComparison.Ordinal)
                     && (HudForm.DefaultPillLogicalWidth == HudForm.DefaultStackLogicalWidth)
                     && (HudForm.DefaultPillLogicalWidth == 388)
                     && (HudForm.MinPillLogicalWidth == HudForm.MinStackLogicalWidth)

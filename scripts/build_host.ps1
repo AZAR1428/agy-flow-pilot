@@ -5,7 +5,7 @@
     1. Compiles a temporary FlowPilotHost.selftest.exe with /define:SELF_TEST and executes --self-test.
     2. Compiles the lean production sidecars\pilot\host\FlowPilotHost.exe WITHOUT /define:SELF_TEST
        using /nologo /target:winexe /platform:x64 /optimize+ /debug-.
-    3. Verifies PE32+ x64 headers, IMAGE_DEBUG_DIRECTORY == (0, 0), version metadata (3.9.0.0),
+    3. Verifies PE32+ x64 headers, IMAGE_DEBUG_DIRECTORY == (0, 0), version metadata matching plugin.json,
        zero RSDS/NB10/.pdb/Users\ path strings across ASCII and even/odd UTF-16LE encodings,
        and confirms negative --url exits with code 2 on the production binary.
 #>
@@ -17,10 +17,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$expectedVersion = "3.9.0"
-$expectedFileVersion = "3.9.0.0"
-
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$manifestPath = Join-Path $repoRoot "plugin.json"
+if (-not (Test-Path -LiteralPath $manifestPath)) {
+    throw "Plugin manifest not found: $manifestPath"
+}
+$expectedVersion = [string]((Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+if (-not $expectedVersion) {
+    throw "Failed to read version from $manifestPath"
+}
+$expectedFileVersion = "$expectedVersion.0"
 $hostDir = Join-Path $repoRoot "sidecars\pilot\host"
 $srcPath = Join-Path $hostDir "FlowPilotHost.cs"
 $outPath = Join-Path $hostDir "FlowPilotHost.exe"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.9.0."""
+"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.9.1."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ if str(THIS_DIR) not in sys.path:
 
 from engine import FlowPilotEngine, _stat_mtime_ns  # noqa: E402
 
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.9.1"
 HUD_MUTEX_NAME = "Local\\AgyFlowPilot_DesktopHud_SingleInstance_v2"
 CREATE_NO_WINDOW = 0x08000000
 _FALLBACK_HTML = (

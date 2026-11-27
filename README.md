@@ -1,19 +1,19 @@
-# Flow Pilot (`agy-flow-pilot` v3.9.0)
+# Flow Pilot (`agy-flow-pilot` v3.9.1)
 
 专为 **Google Antigravity** 打造的 **实时遥测侧边栏 + 按需浅色胶囊桌面悬浮窗（Unified Capsule Telemetry HUD）+ Fast I/O 零溢盘本地文件引擎** 一体化插件套件（零 Hook 同步税、100% 只读被动遥测与显式手动控制，绝不代发消息）。
 
 ---
 
-## 一、架构总览（v3.9.0 · 零 Hook、SSE 实时推送、按需桌面胶囊与 3 工具极速 Fast I/O）
+## 一、架构总览（v3.9.1 · 零 Hook、SSE 实时推送、按需桌面胶囊与 3 工具极速 Fast I/O）
 
 ```text
 %USERPROFILE%\.gemini\config\plugins\agy-flow-pilot\
-├── plugin.json                # 插件清单与元信息 (v3.9.0，对齐 sidecar://agy-flow-pilot/pilot/ 自动唤起)
+├── plugin.json                # 插件清单与元信息 (v3.9.1，对齐 sidecar://agy-flow-pilot/pilot/ 自动唤起)
 ├── mcp_config.json            # 注册 fast_io 原生 Python Eager MCP 服务（3 工具 eager：grep/glob_tree/outline）
 ├── LICENSE                    # MIT 开源许可证
 ├── THIRD_PARTY_NOTICES.md     # 微软 WebView2 SDK 第三方组件许可声明
 ├── rules\
-│   └── AGENTS.md              # 精简读写路由（<=1.1KB：常规读走并行 read_file，探索走 Eager fast_io）与 PS 5.1 护栏
+│   └── AGENTS.md              # 精简读写路由（<=1.3KB：并行 read_file + 3 工具 Eager fast_io）、进度播报与 PS 5.1 护栏
 ├── assets\
 │   └── logo.svg               # 暖白电光蓝科学遥测图标
 ├── scripts\
@@ -35,7 +35,10 @@
 
 ---
 
-## 二、v3.9.0 & 历史版本更新亮点
+## 二、v3.9.1 & 历史版本更新亮点
+
+### v3.9.1 更新亮点（集成执行过程进度播报规范）
+1. **插件规则内置“边做边说”与原生进度条协同**：在 `rules/AGENTS.md` 新增轻量级“执行过程进度播报”章节（全文件仍仅 ~1.25 KB），指导 Agent 动手前一句话交代意图、在关键发现/换方向/遇卡点或连跑 4～5 步时同回合附简短进度说明，并同步调用原生 `update_steps` / `update_focus`，解决默认静默执行缺少过程感知的问题（无需在用户全局目录重复维护第二份规则）。
 
 ### v3.9.0 深度瘦身与实时提速亮点（零 Hook、SSE 实时推送、6× 正则提速与按需桌面 HUD）
 1. **P0 关键回归修复与零字节码启动**：修复 `engine.py` 中 `USER_INPUT` 步骤处理残留引用导致的流更新异常，彻底清理历史死代码、冗余全局调试对象与前端双发头；`sidecar.json` 补齐 `"-S", "-B", "-u"` 启动参数且 `server.py` 将 `sys.dont_write_bytecode = True` 提前至顶层导入前，确保运行目录零 `__pycache__`。

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight multi-task stream telemetry & on-demand error diagnosis for Flow Pilot v3.9.0."""
+"""Ultra-lightweight multi-task stream telemetry & on-demand error diagnosis for Flow Pilot v3.9.1."""
 
 from __future__ import annotations
 
