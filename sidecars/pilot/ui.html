@@ -6,7 +6,7 @@
   <link rel="icon" href="data:," />
   <title>Flow Pilot · 实时监控</title>
   <style>
-  /* Flow Pilot v3.8.1 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
+  /* Flow Pilot v3.8.2 — Light-Only Unified Capsule + Anti-Jitter Telemetry Design Tokens */
   :root,
   html[data-theme="light"] {
     color-scheme: light;
@@ -684,7 +684,7 @@
   .ctx-est-tag { font-size: 10px; font-weight: 500; color: var(--fp-text-muted); }
   .dot-swatch { display: inline-block; width: 6.5px; height: 6.5px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
 
-  .step-row { display: none; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; padding: 2px 5px; margin: 0 -5px; border-radius: 6px; }
+  .step-row { display: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 6px; min-height: 22px; padding: 2px 5px; margin: 0 -5px; border-radius: 6px; }
   .step-row.state-alert, .step-row.state-stalled { display: flex; }
   .step-row.state-stalled { background: rgb(var(--fp-sub-rgb)); cursor: pointer; }
   .step-row.state-alert { background: var(--fp-danger-bg); cursor: pointer; }
@@ -701,14 +701,17 @@
   .step-row.state-stalled .step-text { color: var(--fp-warn); font-weight: 500; }
   .step-row.state-alert .step-text { color: var(--fp-danger); font-weight: 600; }
 
-  .step-actions { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .step-actions { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: auto; }
   .mini-btn { display: none; appearance: none; border: 1px solid var(--fp-border-strong); background: rgb(var(--fp-card-rgb)); box-shadow: var(--fp-pill-shadow); color: var(--fp-text-sec); border-radius: 5px; padding: 1.5px 6px; font-size: 11px; font-weight: 500; line-height: 1.35; letter-spacing: 0; font-family: inherit; cursor: pointer; white-space: nowrap; }
   .mini-btn:hover { color: var(--fp-accent); border-color: var(--fp-accent); }
   .mini-btn:disabled { opacity: 0.52; cursor: default; }
   .mini-btn.danger { color: var(--fp-danger); border-color: var(--fp-danger-border); }
   .mini-btn.wake { color: var(--fp-danger); border-color: var(--fp-danger-border); font-weight: 600; }
-  .step-row.state-alert .mini-btn.wake { display: inline-flex; }
+  .step-row.state-alert .mini-btn.wake,
+  .step-row.state-alert .mini-btn.run-act { display: inline-flex; }
   .step-row.state-stalled .mini-btn.run-act { display: inline-flex; }
+  .step-hint { display: none; flex: 1 0 100%; font-size: 10.5px; font-weight: 500; line-height: 1.35; color: var(--fp-warn); padding-top: 2px; border-top: 1px dashed var(--fp-warn-border); }
+  .step-hint.visible { display: block; }
 
   /* ---------- Swarm Total + Per-Bee Leaderboard ---------- */
   .sub-section { display: none; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--fp-border); }
@@ -749,6 +752,8 @@
 
   .sub-detail { display: none; padding: 5px 8px; margin-left: 11px; border-radius: 0 6px 6px 0; background: rgba(var(--fp-sub-rgb), 0.7); border-left: 2px solid var(--fp-accent-med); font-size: 11px; line-height: 1.5; letter-spacing: 0; color: var(--fp-text-sec); }
   .sub-detail.open { display: block; }
+  .sub-hint { display: none; margin-left: 11px; padding: 2px 6px; border-radius: 5px; background: var(--fp-warn-bg); border: 1px solid var(--fp-warn-border); font-size: 10.5px; font-weight: 500; line-height: 1.35; color: var(--fp-warn); }
+  .sub-hint.visible { display: block; }
 
   /* ---------- Historical Idle Footer & Direct Expanded Idle Stream ---------- */
   .idle-footer { display: none; flex-direction: column; border-top: none; background: transparent; flex: 0 0 auto; }
@@ -860,7 +865,7 @@
           </div>
 
           <div class="set-row">
-            <div id="toggleAutoHeal" class="switch-btn on" role="switch" aria-checked="true" tabindex="0">
+            <div id="toggleAutoHeal" class="switch-btn" role="switch" aria-checked="false" tabindex="0">
               <span>断流自动续跑</span><span class="switch-track"></span>
             </div>
           </div>
@@ -988,6 +993,7 @@
           <button class="mini-btn wake" data-role="wakeBtn" type="button">⚡ 唤醒</button>
           <button class="mini-btn run-act danger" data-role="cancelBtn" type="button">⏹ 中断步骤</button>
         </div>
+        <div class="step-hint" data-role="stepHint" style="display:none;" role="status" aria-live="polite"></div>
       </div>
 
       <div class="sub-section" data-role="subSection">
@@ -1043,7 +1049,7 @@
   el("dockBackBtn").style.display = isHudMode ? "inline-flex" : "none";
 
   /* ---------- State Store ---------- */
-  let watchdogConfig = { autoHealStream: true, stallThresholdSec: 90 };
+  let watchdogConfig = { autoHealStream: false, stallThresholdSec: 90 };
   let fastIoConfig = { mcpEnabled: true };
   let fastIoStats = {
     batchReadCalls: 0, batchReadFiles: 0, grepCalls: 0, globCalls: 0,
@@ -1254,10 +1260,39 @@
   }
 
   /* ---------- Auth & API ---------- */
+  const AUTH_RELOAD_COOLDOWN_MS = 15000;
+  const AUTH_RELOAD_TS_KEY = "__fp_auth_reload_at__";
+
   function getAuthToken() {
     let stored = "";
     try { stored = sessionStorage.getItem("__fp_hud_token__") || ""; } catch (_) {}
     return String(window.__FP_HUD_TOKEN__ || stored || urlParams.get("token") || "").trim();
+  }
+
+  function tryAuthRecoveryReload() {
+    if (hasWebViewBridge()) return false;
+    const now = Date.now();
+    let lastReloadAt = 0;
+    try {
+      lastReloadAt = Number(sessionStorage.getItem(AUTH_RELOAD_TS_KEY) || "0") || 0;
+    } catch (_) {
+      return false;
+    }
+    if (lastReloadAt > 0 && (now - lastReloadAt) < AUTH_RELOAD_COOLDOWN_MS) {
+      return false;
+    }
+    try {
+      sessionStorage.setItem(AUTH_RELOAD_TS_KEY, String(now));
+      sessionStorage.removeItem("__fp_hud_token__");
+    } catch (_) {
+      return false;
+    }
+    if (isHudMode && window.location.pathname === "/ui.html") {
+      window.location.replace(`/${window.location.search || "?mode=hud"}`);
+    } else {
+      window.location.reload();
+    }
+    return true;
   }
 
   async function apiFetch(path, options = {}) {
@@ -1274,7 +1309,12 @@
     const text = await resp.text();
     let json = {};
     try { json = text ? JSON.parse(text) : {}; } catch (_) { json = { raw: text }; }
-    if (!resp.ok) throw new Error(json.error || json.message || `HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const err = new Error(json.error || json.message || `HTTP ${resp.status}`);
+      err.status = resp.status;
+      err.data = json;
+      throw err;
+    }
     return json;
   }
 
@@ -2131,6 +2171,7 @@
           consecutiveErrors: Math.round(num(raObj && raObj.consecutiveErrors, 0)),
           isTimeout: Boolean(raObj && raObj.isTimeout),
           isInterrupted: Boolean(raObj && raObj.isInterrupted),
+          isServerRestart: Boolean(raObj && raObj.isServerRestart),
           ageSec: optNum(raObj && raObj.ageSec),
           message: alertMsg,
         }
@@ -2138,7 +2179,13 @@
 
     const rawSubs = Array.isArray(d.activeSubagents) ? d.activeSubagents : [];
     const subs = rawSubs
-      .filter((s) => s && typeof s === "object" && (s.agentKind !== "swarm_monitor" || s.hasError))
+      .filter((s) => s && typeof s === "object" && (
+        s.agentKind !== "swarm_monitor" ||
+        s.hasError ||
+        s.running ||
+        String(s.state || "").toLowerCase() === "running" ||
+        s.isStalled
+      ))
       .map((s) => {
         const sState = String(s.state || (s.running ? "running" : "waiting")).toLowerCase();
         const sErr = Boolean(s.hasError || sState === "error");
@@ -2228,10 +2275,13 @@
 
     const tokenSpeed = normSpeed(d.tokenSpeed);
     const hbStateLower = String(hb.state || "idle").toLowerCase();
-    const hasHbAlert = Boolean(alertMsg) ||
+    const isServerRestartAlert = Boolean(raObj && raObj.isServerRestart);
+    const hasHbAlert = !isServerRestartAlert && (
+      Boolean(alertMsg) ||
       Boolean(retryAlert && (retryAlert.isTimeout || retryAlert.isInterrupted || retryAlert.attempt > 0 || retryAlert.consecutiveErrors > 0)) ||
-      ["interrupted", "retrying"].includes(hbStateLower) ||
-      hb.stateLabel === "断流待续" || hb.stateLabel === "重试告警" || hb.stateLabel === "超时中断";
+      ["interrupted", "retrying", "error"].includes(hbStateLower) ||
+      hb.stateLabel === "断流待续" || hb.stateLabel === "重试告警" || hb.stateLabel === "超时中断" || hb.stateLabel === "异常中断"
+    );
 
     let bucket = String(d.bucket || d.tier || "").toUpperCase();
     if (!["ALERT", "RUNNING", "RECENT", "IDLE"].includes(bucket)) {
@@ -2535,8 +2585,10 @@
         if (stLow === "retrying") {
           const att = ra ? (ra.attempt > 0 ? ra.attempt : ra.consecutiveErrors) : 0;
           meta.push(att > 0 ? `重试第 ${att} 次` : "连接重试中");
-        } else if (stLow === "interrupted" && ra && ra.isTimeout) {
-          meta.push("超时中断");
+        } else if (stLow === "interrupted") {
+          meta.push(ra && ra.isTimeout ? "超时中断" : "断流中断");
+        } else if (stLow === "error") {
+          meta.push("异常中断");
         }
         if (ra && ra.consecutiveErrors >= 2) {
           meta.push(`连续异常 ${ra.consecutiveErrors} 次`);
@@ -2594,6 +2646,7 @@
       stepElapsed: q("stepElapsed"),
       wakeBtn: q("wakeBtn"),
       cancelBtn: q("cancelBtn"),
+      stepHint: q("stepHint"),
       subSection: q("subSection"),
       swarmBar: q("swarmBar"),
       swarmLeft: q("swarmLeft"),
@@ -2611,6 +2664,9 @@
       swarmUserToggled: false,
       openSubIds: new Set(),
       subNodes: new Map(),
+      hintText: "",
+      hintExpiresAt: 0,
+      hintTimerId: null,
     };
 
     const toggleDrawer = (mode) => {
@@ -2663,6 +2719,42 @@
       if (rec.task && (rec.task.hb.hasAlert || rec.task.hb.isStalled)) toggleDrawer("alert");
     });
 
+    const clearStepHint = () => {
+      if (rec.hintTimerId !== null) {
+        clearTimeout(rec.hintTimerId);
+        rec.hintTimerId = null;
+      }
+      const hadHint = Boolean(rec.hintText || refs.stepHint.classList.contains("visible"));
+      rec.hintText = "";
+      rec.hintExpiresAt = 0;
+      refs.stepHint.classList.remove("visible");
+      refs.stepHint.style.display = "none";
+      setTextIfChanged(refs.stepHint, "");
+      if (hadHint) scheduleHudResize();
+    };
+
+    const showStepHint = (msg, durationMs = 5500) => {
+      const clean = String(msg || "").trim();
+      if (!clean) {
+        clearStepHint();
+        return;
+      }
+      if (rec.hintTimerId !== null) clearTimeout(rec.hintTimerId);
+      rec.hintText = clean;
+      rec.hintExpiresAt = Date.now() + durationMs;
+      setTextIfChanged(refs.stepHint, clean);
+      refs.stepHint.classList.add("visible");
+      refs.stepHint.style.display = "block";
+      scheduleHudResize();
+      rec.hintTimerId = setTimeout(() => {
+        rec.hintTimerId = null;
+        clearStepHint();
+      }, durationMs);
+    };
+
+    rec.clearStepHint = clearStepHint;
+    rec.showStepHint = showStepHint;
+
     const bindRescue = (btn, buildPayload) => {
       btn.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -2673,10 +2765,29 @@
         const extra = buildPayload(rec.task);
         const payload = { lsInstanceId: rec.task.lsInstanceId, conversationId: rec.task.cid, ...extra };
         try {
-          await apiFetch("/api/heal", { method: "POST", body: JSON.stringify(payload) });
-          if (payload.mode === "wake") fastPollBoostUntil = Date.now() + 2600;
+          const res = await apiFetch("/api/heal", { method: "POST", body: JSON.stringify(payload) });
+          if (res && res.ok === false) {
+            if (res.error === "already_running") {
+              showStepHint("仍在运行/重试中，请先点击中断步骤");
+            } else if (res.message || res.error) {
+              showStepHint(String(res.message || res.error), 4500);
+            }
+          } else {
+            clearStepHint();
+            if (payload.mode === "wake") fastPollBoostUntil = Date.now() + 2600;
+          }
           pollNow(true);
-        } catch (_) {
+        } catch (err) {
+          const errData = err && err.data && typeof err.data === "object" ? err.data : null;
+          if (
+            (err && err.status === 409) ||
+            (errData && errData.error === "already_running") ||
+            String((err && err.message) || "") === "already_running"
+          ) {
+            showStepHint("仍在运行/重试中，请先点击中断步骤");
+          } else if (err && err.message) {
+            showStepHint(`操作失败：${err.message}`, 4000);
+          }
         } finally {
           setTimeout(() => {
             btn.disabled = false;
@@ -2694,6 +2805,9 @@
 
     bindRescue(refs.wakeBtn, () => ({ mode: "wake" }));
     bindRescue(refs.cancelBtn, (t) => {
+      if (t.hb.hasAlert && String(t.hb.state || "").toLowerCase() === "retrying") {
+        return { mode: "cancel_invocation" };
+      }
       if (t.hb.runningStepIndex >= 0) {
         return { mode: "cancel_step", stepIndex: t.hb.runningStepIndex };
       }
@@ -2813,6 +2927,7 @@
         `<button class="sub-wake-btn" type="button">⚡ 唤醒</button>` +
         `<span class="speed-badge empty"></span>` +
       `</div>` +
+      `<div class="sub-hint" style="display:none;" role="status" aria-live="polite"></div>` +
       `<div class="sub-detail selectable"></div>`;
 
     const rowEl = wrap.querySelector(".sub-row");
@@ -2826,9 +2941,10 @@
     const meterFillEl = wrap.querySelector(".sub-meter-fill");
     const wakeEl = wrap.querySelector(".sub-wake-btn");
     const spdEl = wrap.querySelector(".speed-badge");
+    const hintEl = wrap.querySelector(".sub-hint");
     const detEl = wrap.querySelector(".sub-detail");
 
-    const node = { wrap, rowEl, dotEl, nameEl, stageEl, stageLblEl, timerWrapEl, timerEl, meterWrapEl, meterFillEl, wakeEl, spdEl, detEl, sub: null };
+    const node = { wrap, rowEl, dotEl, nameEl, stageEl, stageLblEl, timerWrapEl, timerEl, meterWrapEl, meterFillEl, wakeEl, spdEl, hintEl, detEl, hintTimerId: null, sub: null };
 
     rowEl.addEventListener("click", (e) => {
       if (e.target instanceof Element && e.target.closest("button")) return;
@@ -2871,14 +2987,47 @@
       } else {
         body = { lsInstanceId: rec.task.lsInstanceId, conversationId: subCid, mode: "wake" };
       }
+      const showSubHint = (msg, durationMs = 5500) => {
+        if (node.hintTimerId !== null) clearTimeout(node.hintTimerId);
+        setTextIfChanged(hintEl, msg);
+        hintEl.classList.add("visible");
+        hintEl.style.display = "block";
+        scheduleHudResize();
+        node.hintTimerId = setTimeout(() => {
+          node.hintTimerId = null;
+          hintEl.classList.remove("visible");
+          hintEl.style.display = "none";
+          setTextIfChanged(hintEl, "");
+          scheduleHudResize();
+        }, durationMs);
+      };
       try {
-        await apiFetch("/api/heal", {
+        const res = await apiFetch("/api/heal", {
           method: "POST",
           body: JSON.stringify(body),
         });
-        fastPollBoostUntil = Date.now() + 2400;
+        if (res && res.ok === false) {
+          if (res.error === "already_running") {
+            showSubHint("仍在运行/重试中，请先点击中断步骤");
+          } else if (res.message || res.error) {
+            showSubHint(String(res.message || res.error), 4500);
+          }
+        } else {
+          if (node.hintTimerId !== null) { clearTimeout(node.hintTimerId); node.hintTimerId = null; }
+          hintEl.classList.remove("visible");
+          hintEl.style.display = "none";
+          fastPollBoostUntil = Date.now() + 2400;
+        }
         pollNow(true);
-      } catch (_) {
+      } catch (err) {
+        const errData = err && err.data && typeof err.data === "object" ? err.data : null;
+        if (
+          (err && err.status === 409) ||
+          (errData && errData.error === "already_running") ||
+          String((err && err.message) || "") === "already_running"
+        ) {
+          showSubHint("仍在运行/重试中，请先点击中断步骤");
+        }
       } finally {
         setTimeout(() => { wakeEl.disabled = false; }, 600);
       }
@@ -3166,14 +3315,30 @@
           refs.stepTimerWrap.style.display = "none";
           timerRegistry.delete(mainTimerKey);
         }
-      } else if (hbStateLower === "interrupted" && ra && ra.isTimeout) {
-        setTextIfChanged(refs.stepLabel, "超时中断");
+      } else if (hbStateLower === "interrupted") {
+        const staticLabel = (ra && ra.isTimeout)
+          ? "超时中断"
+          : ((hb.stateLabel && hb.stateLabel !== "重试告警") ? hb.stateLabel : "断流中断");
+        setTextIfChanged(refs.stepLabel, staticLabel);
+        refs.stepTimerWrap.style.display = "none";
+        timerRegistry.delete(mainTimerKey);
+      } else if (hbStateLower === "error") {
+        const staticLabel = (hb.stateLabel && hb.stateLabel !== "重试告警") ? hb.stateLabel : "异常中断";
+        setTextIfChanged(refs.stepLabel, staticLabel);
         refs.stepTimerWrap.style.display = "none";
         timerRegistry.delete(mainTimerKey);
       } else {
-        setTextIfChanged(refs.stepLabel, hb.stateLabel || hb.alertMsg || "连接中断");
+        const fallbackLabel = (hb.stateLabel && hb.stateLabel !== "重试告警") ? hb.stateLabel : (hb.alertMsg || "连接中断");
+        setTextIfChanged(refs.stepLabel, fallbackLabel);
         refs.stepTimerWrap.style.display = "none";
         timerRegistry.delete(mainTimerKey);
+      }
+      if (rec.hintText && Date.now() < rec.hintExpiresAt) {
+        setTextIfChanged(refs.stepHint, rec.hintText);
+        refs.stepHint.classList.add("visible");
+        refs.stepHint.style.display = "block";
+      } else if (rec.clearStepHint) {
+        rec.clearStepHint();
       }
     } else if (hb.isStalled) {
       refs.stepRow.className = "step-row state-stalled";
@@ -3189,12 +3354,20 @@
         refs.stepTimerWrap.style.display = "none";
         timerRegistry.delete(mainTimerKey);
       }
+      if (rec.hintText && Date.now() < rec.hintExpiresAt) {
+        setTextIfChanged(refs.stepHint, rec.hintText);
+        refs.stepHint.classList.add("visible");
+        refs.stepHint.style.display = "block";
+      } else if (rec.clearStepHint) {
+        rec.clearStepHint();
+      }
     } else {
       refs.stepRow.className = "step-row";
       refs.stepRow.style.display = "none";
       refs.stepWarnIcon.style.display = "none";
       refs.stepTimerWrap.style.display = "none";
       timerRegistry.delete(mainTimerKey);
+      if (rec.clearStepHint) rec.clearStepHint();
     }
 
     renderCardDrawer(rec);
@@ -3567,6 +3740,10 @@
         el("stackScroll").style.display = "none";
         const collapsedStackList = el("stackList");
         for (const [k, rec] of Array.from(cardRecords.entries())) {
+          if (rec.hintTimerId !== null) clearTimeout(rec.hintTimerId);
+          for (const sn of rec.subNodes.values()) {
+            if (sn && sn.hintTimerId !== null) clearTimeout(sn.hintTimerId);
+          }
           if (rec.refs.root.parentNode === collapsedStackList) collapsedStackList.removeChild(rec.refs.root);
           rec.subNodes.clear();
           cardRecords.delete(k);
@@ -3612,6 +3789,10 @@
 
     for (const [k, rec] of Array.from(cardRecords.entries())) {
       if (!activeKeySet.has(k)) {
+        if (rec.hintTimerId !== null) clearTimeout(rec.hintTimerId);
+        for (const sn of rec.subNodes.values()) {
+          if (sn && sn.hintTimerId !== null) clearTimeout(sn.hintTimerId);
+        }
         if (rec.refs.root.parentNode === stackList) stackList.removeChild(rec.refs.root);
         rec.subNodes.clear();
         cardRecords.delete(k);
@@ -3718,7 +3899,12 @@
         el("connDot").classList.add("offline");
         el("dockConnDot").classList.add("offline");
       }
-      el("connDot").title = `连接重试中: ${err.message}`;
+      if (err && err.status === 401) {
+        if (tryAuthRecoveryReload()) return;
+        el("connDot").title = "认证令牌已过期，请刷新面板";
+      } else {
+        el("connDot").title = `连接重试中: ${err.message}`;
+      }
     } finally {
       pollInFlight = false;
       const nextForce = pollQueuedForceFull;

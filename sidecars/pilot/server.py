@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.8.1."""
+"""Ultra-lightweight HTTP Sidecar Gateway, Peer Bus & Desktop HUD Supervisor for Flow Pilot v3.8.2."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ if str(THIS_DIR) not in sys.path:
 
 from engine import FlowPilotEngine, _stat_mtime_ns  # noqa: E402
 
-APP_VERSION = "3.8.1"
+APP_VERSION = "3.8.2"
 HUD_MUTEX_NAME = "Local\\AgyFlowPilot_DesktopHud_SingleInstance_v2"
 CREATE_NO_WINDOW = 0x08000000
 _FALLBACK_HTML = (
@@ -342,6 +342,34 @@ class _PeerNodeCoordinator:
         except Exception:
             return None
 
+    _BUCKET_MERGE_RANK: dict[str, int] = {
+        "IDLE": 0,
+        "RECENT": 1,
+        "RUNNING": 2,
+        "ALERT": 2,
+    }
+
+    @classmethod
+    def _task_merge_priority(cls, task: dict[str, Any]) -> tuple[int, int, int, float]:
+        bucket_rank = cls._BUCKET_MERGE_RANK.get(str(task.get("bucket") or "").upper(), 0)
+        hb = task.get("heartbeat")
+        try:
+            hb_step = int(hb.get("stepIndex") or 0) if isinstance(hb, dict) else 0
+        except (ValueError, TypeError):
+            hb_step = 0
+        raw_step = task.get("stepCount")
+        try:
+            step_cnt = int(raw_step) if raw_step is not None else hb_step
+        except (ValueError, TypeError):
+            step_cnt = hb_step
+        step_cnt = max(step_cnt, hb_step)
+        stream_connected = 1 if task.get("streamConnected") else 0
+        try:
+            last_mod = float(task.get("lastModifiedAt") or 0.0)
+        except (ValueError, TypeError):
+            last_mod = 0.0
+        return (bucket_rank, step_cnt, stream_connected, last_mod)
+
     def aggregate_all_tasks(self, hint_conversation_id: str = "") -> dict[str, Any]:
         local_payload = self.engine.get_local_tasks_payload(hint_conversation_id=hint_conversation_id)
         remote_peers = self.list_alive_nodes(include_self=False, force=False)
@@ -349,14 +377,14 @@ class _PeerNodeCoordinator:
             return local_payload
 
         pool = self._get_pool()
-        futures = [pool.submit(self.request_peer, peer, "GET", "/api/node-tasks", None, 0.45) for peer in remote_peers]
+        futures = [pool.submit(self.request_peer, peer, "GET", "/api/node-tasks", None, 1.2) for peer in remote_peers]
         by_cid: dict[str, dict[str, Any]] = {
             str(t["conversationId"]): t for t in (local_payload.get("tasks") or []) if isinstance(t, dict) and t.get("conversationId")
         }
         peer_revs: list[int] = [int(local_payload.get("rev") or 0)]
         for fut in futures:
             try:
-                peer_res = fut.result(timeout=0.5)
+                peer_res = fut.result(timeout=1.35)
             except Exception:
                 peer_res = None
             if not isinstance(peer_res, dict) or not peer_res.get("ok"):
@@ -367,9 +395,7 @@ class _PeerNodeCoordinator:
                     continue
                 if (existing := by_cid.get(cid)) is None:
                     by_cid[cid] = pt
-                elif (1 if pt.get("streamConnected") else 0, float(pt.get("lastModifiedAt") or 0.0)) > (
-                    1 if existing.get("streamConnected") else 0, float(existing.get("lastModifiedAt") or 0.0)
-                ):
+                elif self._task_merge_priority(pt) > self._task_merge_priority(existing):
                     by_cid[cid] = pt
 
         merged_tasks = list(by_cid.values())
@@ -414,7 +440,9 @@ class _PeerNodeCoordinator:
                     return res
         if cid and not self.engine.owns_conversation(cid):
             for p in remote_peers:
-                if isinstance(res := self.request_peer(p, "POST", f"{route}?localOnly=1", body, timeout=4.5), dict) and res.get("ok"):
+                if isinstance(res := self.request_peer(p, "POST", f"{route}?localOnly=1", body, timeout=4.5), dict) and (
+                    res.get("ok") or res.get("error") == "already_running"
+                ):
                     return res
         return None
 
@@ -1152,13 +1180,16 @@ def make_handler(
                         return
                     raw_idx = body.get("stepIndex")
                     step_idx = int(raw_idx) if isinstance(raw_idx, (int, float)) and not isinstance(raw_idx, bool) and int(raw_idx) >= 0 else None
-                    self._send_json(200, engine.heal(
+                    heal_res = engine.heal(
                         conversation_id=cid,
                         mode=str(body.get("mode") or "wake").strip(),
                         step_index=step_idx,
                         text=str(body.get("text") or "").strip(),
                         kill_background_tasks=bool(body.get("killBackgroundTasks", False)),
-                    ))
+                    )
+                    if not isinstance(heal_res, dict):
+                        heal_res = {"ok": False, "error": "invalid_heal_response"}
+                    self._send_json(200, heal_res)
                     return
 
                 if route == "/api/config":
